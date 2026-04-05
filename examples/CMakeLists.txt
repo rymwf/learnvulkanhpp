@@ -1,22 +1,6 @@
-file(GLOB srcs *.cpp)
-
-foreach(example ${srcs}) 
-
-get_filename_component(aa ${example} NAME_WLE)
-
-add_executable(${aa} ${example})
-
-target_include_directories(${aa} PRIVATE 
-${CMAKE_SOURCE_DIR}
-${CMAKE_SOURCE_DIR}/3rdparty/include
-)
-
-target_link_libraries(${aa} PRIVATE 
-Vulkan::cppm 
-glm::glm
-std_module
-common
-glfw
-)
-
+file(GLOB children RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *)
+foreach(child ${children})
+    if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${child}")
+        add_subdirectory(${child})
+    endif()
 endforeach()
