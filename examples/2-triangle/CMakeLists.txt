@@ -6,7 +6,6 @@ add_executable(${dirname} ${srcs})
 
 target_link_libraries(${dirname} PRIVATE 
 Vulkan::cppm 
-std_module
 common
 glfw
 glm::glm

@@ -6,4 +6,4 @@ file(GLOB common_sources
 
 target_sources(common PUBLIC FILE_SET cxx_modules TYPE CXX_MODULES FILES ${common_sources})
 
-target_link_libraries(common PUBLIC std_module)
+# target_link_libraries(common PUBLIC std_module)

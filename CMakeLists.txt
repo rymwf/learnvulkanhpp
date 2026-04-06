@@ -1,17 +1,13 @@
 cmake_minimum_required(VERSION 4.1 FATAL_ERROR)
 
-# set(CMAKE_CXX_MODULE_STD on)
-# set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD d0edc3af-4c50-42ea-a356-e2862fe7a444)
-# set(CMAKE_CXX_SCAN_FOR_MODULES on)
+get_filename_component(MY_PROJECT_NAME ${CMAKE_SOURCE_DIR} NAME_WLE)
+project(${MY_PROJECT_NAME} VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED on)
 set(CMAKE_CXX_EXTENSIONS off)
-
-get_filename_component(MY_PROJECT_NAME ${CMAKE_SOURCE_DIR} NAME_WLE)
-project(${MY_PROJECT_NAME} VERSION 0.1.0 LANGUAGES CXX)
-
-add_compile_options(-stdlib=libc++)
+set(CMAKE_CXX_SCAN_FOR_MODULES on)
+set(CMAKE_CXX_MODULE_STD on)
 
 # Vulkan
 find_package (Vulkan REQUIRED)
