@@ -154,7 +154,7 @@ private:
                                           .enabledExtensionCount = static_cast<std::uint32_t>(enabledExtensions.size()),
                                           .ppEnabledExtensionNames = enabledExtensions.data()};
 
-        instance = vk::raii::Instance(context, createInfo);
+        instance = context.createInstance(createInfo);
 
         // load function pointers with created instance
         dldy.init(*instance);
