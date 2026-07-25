@@ -1,13 +1,27 @@
-add_subdirectory(glfw)
+add_library(VulkanCppModule)
+add_library(Vulkan::cppm ALIAS VulkanCppModule)
 
-add_library(glm_module)
-add_library(glm::glm ALIAS glm_module)
+target_compile_definitions(VulkanCppModule PUBLIC
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
+    VULKAN_HPP_NO_CONSTRUCTORS # use designated initializers
+)
+if(WIN32)
+    target_compile_definitions(VulkanCppModule PUBLIC
+        VK_USE_PLATFORM_WIN32_KHR
+    )
+endif()
 
-target_include_directories(glm_module PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(VulkanCppModule PRIVATE Vulkan::Headers)
 
-target_sources(glm_module
-        PUBLIC
-        FILE_SET cxx_modules TYPE CXX_MODULES
-        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/glm/glm
-        FILES ${CMAKE_CURRENT_SOURCE_DIR}/glm/glm/glm.cppm
+# use dynamic dispatcher, so that we don't have to link against the static library, and can load the functions at runtime
+# target_link_libraries(VulkanCppModule PUBLIC Vulkan::Vulkan)
+
+set_target_properties(VulkanCppModule PROPERTIES CXX_STANDARD 23)
+
+target_sources(VulkanCppModule
+    PUBLIC
+    FILE_SET cxx_modules TYPE CXX_MODULES
+    BASE_DIRS "${Vulkan_INCLUDE_DIR}"
+    FILES "${Vulkan_INCLUDE_DIR}/vulkan/vulkan.cppm"
 )

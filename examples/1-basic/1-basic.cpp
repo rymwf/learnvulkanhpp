@@ -1,4 +1,4 @@
-import vulkan_hpp;
+import vulkan;
 import std;
 import common;
 

@@ -1,0 +1,8 @@
+[requires]
+glm/1.0.3
+glfw/3.4
+spirv-reflect/1.4.313.0
+
+[generators]
+CMakeDeps
+CMakeToolchain

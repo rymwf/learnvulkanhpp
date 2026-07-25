@@ -11,6 +11,10 @@ glfw
 glm::glm
 )
 
+if(WIN32)
+    target_compile_definitions(${dirname} PRIVATE NOMINMAX)
+endif()
+
 find_program(GLSLC_EXECUTABLE NAMES glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 
 set(SHADER_SPV_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")

@@ -7,7 +7,7 @@
 
 #include <GLFW/glfw3native.h>
 
-import vulkan_hpp;
+import vulkan;
 import std;
 import common;
 
