@@ -23,6 +23,7 @@
 
 - `basic`：创建 Vulkan 实例、设备、队列和命令缓冲。
 - `triangle`：通过光栅管线向交换链绘制三角形。
+- `geometry`：使用 Geometry Shader 将输入点扩展为彩色三角形；需要 GPU 支持 `geometryShader` Feature。
 - `raytracing`：使用 KHR Ray Tracing Pipeline、BLAS/TLAS 和 SBT 绘制光追三角形；需要支持 Vulkan 1.2、buffer device address、acceleration structure 和 ray tracing pipeline 的 GPU。
 
 ## 构建
