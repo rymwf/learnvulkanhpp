@@ -15,15 +15,15 @@
 
 | 目录          | 说明                                    |
 | ----------- | ------------------------------------- |
-| `examples/` | 可执行示例（如 `1-basic`：初始化 Vulkan 上下文与设备等） |
+| `examples/` | 可执行示例（如 `basic`：初始化 Vulkan 上下文与设备等） |
 | `common/`   | 共享 C++ 模块                             |
 | `3rdparty/` | 第三方依赖的 CMake 适配层                       |
 
 当前示例：
 
-- `1-basic`：创建 Vulkan 实例、设备、队列和命令缓冲。
-- `2-triangle`：通过光栅管线向交换链绘制三角形。
-- `3-raytracing`：使用 KHR Ray Tracing Pipeline、BLAS/TLAS 和 SBT 绘制光追三角形；需要支持 Vulkan 1.2、buffer device address、acceleration structure 和 ray tracing pipeline 的 GPU。
+- `basic`：创建 Vulkan 实例、设备、队列和命令缓冲。
+- `triangle`：通过光栅管线向交换链绘制三角形。
+- `raytracing`：使用 KHR Ray Tracing Pipeline、BLAS/TLAS 和 SBT 绘制光追三角形；需要支持 Vulkan 1.2、buffer device address、acceleration structure 和 ray tracing pipeline 的 GPU。
 
 ## 构建
 

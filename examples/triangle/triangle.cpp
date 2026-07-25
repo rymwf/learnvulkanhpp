@@ -3,7 +3,7 @@ import std;
 import common;
 
 #ifndef SHADER_SPV_DIR
-#error "SHADER_SPV_DIR must be set by CMake (see examples/2-triangle/CMakeLists.txt)"
+#error "SHADER_SPV_DIR must be set by CMake (see examples/triangle/CMakeLists.txt)"
 #endif
 
 constexpr std::uint32_t maxConcurrentFrames = 2;

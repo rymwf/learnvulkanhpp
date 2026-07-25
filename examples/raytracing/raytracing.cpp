@@ -3,7 +3,7 @@ import std;
 import common;
 
 #ifndef SHADER_SPV_DIR
-#error "SHADER_SPV_DIR must be set by CMake (see examples/3-raytracing/CMakeLists.txt)"
+#error "SHADER_SPV_DIR must be set by CMake (see examples/raytracing/CMakeLists.txt)"
 #endif
 
 namespace {
