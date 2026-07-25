@@ -1,12 +1,3 @@
-#include <GLFW/glfw3.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#endif
-
-#include <GLFW/glfw3native.h>
-
 import vulkan;
 import std;
 import common;
@@ -16,8 +7,6 @@ import common;
 #endif
 
 namespace {
-constexpr std::uint32_t windowWidth = 1024;
-constexpr std::uint32_t windowHeight = 768;
 constexpr std::uint32_t maxConcurrentFrames = 2;
 constexpr vk::Format outputFormat = vk::Format::eR8G8B8A8Unorm;
 
@@ -25,58 +14,6 @@ template <typename T>
 constexpr T alignUp(T value, T alignment) {
     return ((value + alignment - 1) / alignment) * alignment;
 }
-
-std::vector<std::uint32_t> readSpirvFile(const std::filesystem::path &path) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) {
-        throw std::runtime_error(std::format("Failed to open SPIR-V: {}", path.string()));
-    }
-
-    const auto size = static_cast<std::size_t>(file.tellg());
-    if (size == 0 || size % sizeof(std::uint32_t) != 0) {
-        throw std::runtime_error(std::format("Invalid SPIR-V size for {}", path.string()));
-    }
-
-    file.seekg(0);
-    std::vector<std::uint32_t> buffer(size / sizeof(std::uint32_t));
-    file.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(size));
-    if (!file) {
-        throw std::runtime_error(std::format("Failed to read SPIR-V: {}", path.string()));
-    }
-    return buffer;
-}
-
-struct GlfwRuntime {
-    GLFWwindow *window = nullptr;
-    bool initialized = false;
-
-    GlfwRuntime() = default;
-    GlfwRuntime(const GlfwRuntime &) = delete;
-    GlfwRuntime &operator=(const GlfwRuntime &) = delete;
-
-    ~GlfwRuntime() {
-        if (window != nullptr) {
-            glfwDestroyWindow(window);
-        }
-        if (initialized) {
-            glfwTerminate();
-        }
-    }
-
-    void create() {
-        if (!glfwInit()) {
-            throw std::runtime_error("Failed to initialize GLFW");
-        }
-        initialized = true;
-
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-        window = glfwCreateWindow(windowWidth, windowHeight, "Vulkan Ray Tracing Triangle", nullptr, nullptr);
-        if (window == nullptr) {
-            throw std::runtime_error("Failed to create GLFW window");
-        }
-    }
-};
 
 struct BufferResource {
     vk::raii::DeviceMemory memory = nullptr;
@@ -101,19 +38,23 @@ struct Vertex {
     float z;
 };
 
-vk::Bool32 validationCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT,
-                              vk::DebugUtilsMessageTypeFlagsEXT,
-                              const vk::DebugUtilsMessengerCallbackDataEXT *callbackData,
-                              void *) {
-    if (callbackData != nullptr && callbackData->pMessage != nullptr) {
-        std::println("[validation] {}", callbackData->pMessage);
-    }
-    return 0;
-}
 }  // namespace
 
 class RayTracingApplication {
 public:
+    RayTracingApplication()
+        : window({
+              .width = 1024,
+              .height = 768,
+              .title = "Vulkan Ray Tracing Triangle",
+          }),
+          vulkan({
+              .applicationName = "Vulkan Ray Tracing Triangle",
+              .apiVersion = vk::ApiVersion12,
+              .requiredExtensions = window.requiredInstanceExtensions(),
+          }),
+          surface(window.createSurface(vulkan.instance())) {}
+
     ~RayTracingApplication() {
         if (*device) {
             try {
@@ -124,7 +65,6 @@ public:
     }
 
     void run() {
-        glfw.create();
         initVulkan();
         mainLoop();
     }
@@ -137,11 +77,8 @@ private:
         "VK_KHR_ray_tracing_pipeline",
     };
 
-    GlfwRuntime glfw;
-    vk::raii::Context context;
-    vk::detail::DispatchLoaderDynamic dldy;
-    vk::raii::Instance instance = nullptr;
-    vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
+    GlfwWindow window;
+    VulkanInstance vulkan;
     vk::raii::SurfaceKHR surface = nullptr;
     vk::raii::PhysicalDevice physicalDevice = nullptr;
     vk::raii::Device device = nullptr;
@@ -185,8 +122,6 @@ private:
     std::uint32_t currentFrame = 0;
 
     void initVulkan() {
-        createInstance();
-        createSurface();
         selectPhysicalDevice();
         createDevice();
         createCommandPool();
@@ -201,15 +136,6 @@ private:
         createSyncObjects();
     }
 
-    static bool hasLayer(const std::vector<vk::LayerProperties> &properties, std::string_view name) {
-        for (const auto &property : properties) {
-            if (name == property.layerName.data()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     static bool hasExtension(const std::vector<vk::ExtensionProperties> &properties, std::string_view name) {
         for (const auto &property : properties) {
             if (name == property.extensionName.data()) {
@@ -217,82 +143,6 @@ private:
             }
         }
         return false;
-    }
-
-    void createInstance() {
-        dldy.init();
-
-        const auto apiVersion = context.enumerateInstanceVersion();
-        if (apiVersion < vk::ApiVersion12) {
-            throw std::runtime_error("Vulkan 1.2 or newer is required");
-        }
-
-        const auto availableLayers = context.enumerateInstanceLayerProperties();
-        const auto availableExtensions = context.enumerateInstanceExtensionProperties();
-
-        std::vector<const char *> enabledLayers;
-        bool validationEnabled = false;
-        if constexpr (debug_mode) {
-            validationEnabled = hasLayer(availableLayers, "VK_LAYER_KHRONOS_validation");
-            if (validationEnabled) {
-                enabledLayers.push_back("VK_LAYER_KHRONOS_validation");
-            }
-        }
-
-        std::vector<const char *> enabledExtensions = {
-            "VK_KHR_surface",
-            "VK_KHR_win32_surface",
-        };
-        for (const char *extension : enabledExtensions) {
-            if (!hasExtension(availableExtensions, extension)) {
-                throw std::runtime_error(std::format("Required instance extension is unavailable: {}", extension));
-            }
-        }
-
-        const bool debugUtilsEnabled = validationEnabled && hasExtension(availableExtensions, "VK_EXT_debug_utils");
-        if (debugUtilsEnabled) {
-            enabledExtensions.push_back("VK_EXT_debug_utils");
-        }
-
-        vk::DebugUtilsMessengerCreateInfoEXT debugCreateInfo{
-            .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                               vk::DebugUtilsMessageSeverityFlagBitsEXT::eError,
-            .messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                           vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                           vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
-            .pfnUserCallback = validationCallback,
-        };
-
-        vk::ApplicationInfo applicationInfo{
-            .pApplicationName = "Vulkan Ray Tracing Triangle",
-            .applicationVersion = vk::makeApiVersion(0, 1, 0, 0),
-            .pEngineName = "No Engine",
-            .engineVersion = vk::makeApiVersion(0, 1, 0, 0),
-            .apiVersion = vk::ApiVersion12,
-        };
-        vk::InstanceCreateInfo createInfo{
-            .pNext = debugUtilsEnabled ? &debugCreateInfo : nullptr,
-            .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = static_cast<std::uint32_t>(enabledLayers.size()),
-            .ppEnabledLayerNames = enabledLayers.data(),
-            .enabledExtensionCount = static_cast<std::uint32_t>(enabledExtensions.size()),
-            .ppEnabledExtensionNames = enabledExtensions.data(),
-        };
-
-        instance = context.createInstance(createInfo);
-        dldy.init(*instance);
-
-        if (debugUtilsEnabled) {
-            debugMessenger = vk::raii::DebugUtilsMessengerEXT(instance, debugCreateInfo);
-        }
-    }
-
-    void createSurface() {
-        vk::Win32SurfaceCreateInfoKHR createInfo{
-            .hinstance = GetModuleHandle(nullptr),
-            .hwnd = glfwGetWin32Window(glfw.window),
-        };
-        surface = vk::raii::SurfaceKHR(instance, createInfo);
     }
 
     static std::optional<std::uint32_t> findGraphicsPresentQueue(const vk::raii::PhysicalDevice &candidate,
@@ -320,7 +170,7 @@ private:
     }
 
     void selectPhysicalDevice() {
-        const auto candidates = instance.enumeratePhysicalDevices();
+        const auto candidates = vulkan.instance().enumeratePhysicalDevices();
         if (candidates.empty()) {
             throw std::runtime_error("No Vulkan physical devices were found");
         }
@@ -412,7 +262,6 @@ private:
         };
 
         device = physicalDevice.createDevice(createInfo);
-        dldy.init(*device);
         graphicsQueue = device.getQueue(graphicsQueueFamilyIndex, 0);
     }
 
@@ -475,10 +324,9 @@ private:
             throw std::runtime_error("The selected swapchain format does not support blit destination operations");
         }
 
-        int framebufferWidth = 0;
-        int framebufferHeight = 0;
-        glfwGetFramebufferSize(glfw.window, &framebufferWidth, &framebufferHeight);
-        swapchainExtent = chooseExtent(capabilities, framebufferWidth, framebufferHeight);
+        const auto framebufferExtent = window.framebufferExtent();
+        swapchainExtent = chooseExtent(capabilities, static_cast<int>(framebufferExtent.width),
+                                       static_cast<int>(framebufferExtent.height));
 
         std::uint32_t imageCount = capabilities.minImageCount + 1;
         if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
@@ -1170,8 +1018,8 @@ private:
     }
 
     void mainLoop() {
-        while (!glfwWindowShouldClose(glfw.window)) {
-            glfwPollEvents();
+        while (!window.shouldClose()) {
+            window.pollEvents();
             drawFrame();
         }
         device.waitIdle();

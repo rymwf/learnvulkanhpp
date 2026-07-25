@@ -7,12 +7,7 @@ add_executable(${dirname} ${srcs})
 target_link_libraries(${dirname} PRIVATE
     Vulkan::cppm
     common
-    glfw
 )
-
-if(WIN32)
-    target_compile_definitions(${dirname} PRIVATE NOMINMAX)
-endif()
 
 find_program(GLSLC_EXECUTABLE NAMES glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 find_program(SPIRV_VAL_EXECUTABLE NAMES spirv-val HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)

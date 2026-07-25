@@ -1,12 +1,3 @@
-#include <GLFW/glfw3.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#endif
-
-#include <GLFW/glfw3native.h>
-
 import vulkan;
 import std;
 import common;
@@ -15,40 +6,34 @@ import common;
 #error "SHADER_SPV_DIR must be set by CMake (see examples/2-triangle/CMakeLists.txt)"
 #endif
 
-namespace {
-std::vector<std::uint32_t> readSpirvFile(const std::filesystem::path &path) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) {
-        throw std::runtime_error(std::format("failed to open SPIR-V: {}", path.string()));
-    }
-    const auto size = static_cast<std::size_t>(file.tellg());
-    if (size == 0 || size % sizeof(std::uint32_t) != 0) {
-        throw std::runtime_error(std::format("invalid SPIR-V size for {}", path.string()));
-    }
-    file.seekg(0);
-    std::vector<std::uint32_t> buffer(size / sizeof(std::uint32_t));
-    file.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(size));
-    return buffer;
-}
-}  // namespace
-
 constexpr std::uint32_t maxConcurrentFrames = 2;
 
 class HelloTriangleApplication {
 public:
+    HelloTriangleApplication()
+        : window({
+              .width = 1024,
+              .height = 768,
+              .title = "Hello Triangle",
+          }),
+          vulkan({
+              .applicationName = "Hello Triangle",
+              .apiVersion = vk::ApiVersion10,
+              .requiredExtensions = window.requiredInstanceExtensions(),
+          }),
+          surface(window.createSurface(vulkan.instance())) {}
+
     void run() {
-        initWindow(1024, 768);
         initVulkan();
         mainLoop();
-        cleanup();
     }
 
 private:
-    vk::raii::Context context;
-    vk::raii::Instance instance = nullptr;
-    vk::raii::Device device = nullptr;
+    GlfwWindow window;
+    VulkanInstance vulkan;
+    vk::raii::SurfaceKHR surface = nullptr;
     vk::raii::PhysicalDevice physicalDevice = nullptr;
-    vk::detail::DispatchLoaderDynamic dldy;
+    vk::raii::Device device = nullptr;
 
     std::uint32_t graphicsQueueFamilyIndex = 0;
 
@@ -56,9 +41,6 @@ private:
     std::vector<vk::raii::CommandBuffer> commandBuffers;
     vk::raii::Queue graphicsQueue = nullptr;
 
-    GLFWwindow *window = nullptr;
-
-    vk::raii::SurfaceKHR surface = nullptr;
     vk::raii::SwapchainKHR swapchain = nullptr;
     vk::SurfaceFormatKHR swapchainSurfaceFormat{};
     vk::Extent2D swapchainExtent{};
@@ -81,19 +63,7 @@ private:
     std::vector<vk::raii::Fence> inFlightFences;
     std::uint32_t currentFrame = 0;
 
-    void initWindow(int width, int height) {
-        if (!glfwInit()) {
-            throw std::runtime_error("Failed to initialize GLFW");
-        }
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-        window = glfwCreateWindow(width, height, "Hello Triangle", nullptr, nullptr);
-    }
-
     void initVulkan() {
-        createContext();
-        createInstance();
-        createSurface();
         selectPhysicalDevice();
         createDevice();
         createSwapchain();
@@ -104,64 +74,9 @@ private:
         createCommandBuffers();
         createSyncObjects();
     }
-    void createContext() {
-        auto instanceLayerProperties = context.enumerateInstanceLayerProperties();
-        std::println("Instance supported layers: {}", instanceLayerProperties.size());
-        for (auto &e : instanceLayerProperties) {
-            std::println("{}", e.layerName.data());
-        }
-        auto instanceExtensionProperties = context.enumerateInstanceExtensionProperties();
-        std::println("Instance supported extensions: {}", instanceExtensionProperties.size());
-        for (auto &e : instanceExtensionProperties) {
-            std::println("{}", e.extensionName.data());
-        }
-    }
-
-    void createInstance() {
-        // initialize minimal set of function pointers
-        dldy.init();
-
-        auto apiVersion = context.enumerateInstanceVersion();
-
-        std::println("API Version: {}.{}.{}.{}", vk::apiVersionMajor(apiVersion), vk::apiVersionMinor(apiVersion),
-                     vk::apiVersionPatch(apiVersion), vk::apiVersionVariant(apiVersion));
-
-        vk::ApplicationInfo appInfo{.pApplicationName = "Hello Triangle",
-                                    .applicationVersion = vk::makeApiVersion(1, 0, 0, 0),
-                                    .pEngineName = "No Engine",
-                                    .engineVersion = vk::makeApiVersion(1, 0, 0, 0),
-                                    .apiVersion = apiVersion};
-        //   .apiVersion = vk::ApiVersion14};
-
-        std::vector<const char *> enabledLayers = {
-            "VK_LAYER_KHRONOS_validation",
-            "VK_LAYER_LUNARG_crash_diagnostic",
-            // "VK_LAYER_LUNARG_api_dump",
-        };
-
-        std::vector<const char *> enabledExtensions = {
-            "VK_KHR_surface",
-            "VK_KHR_win32_surface",
-            "VK_EXT_debug_utils",
-            "VK_KHR_get_physical_device_properties2",
-            "VK_KHR_get_surface_capabilities2",
-            "VK_EXT_surface_maintenance1",
-        };
-
-        vk::InstanceCreateInfo createInfo{.pApplicationInfo = &appInfo,
-                                          .enabledLayerCount = static_cast<std::uint32_t>(enabledLayers.size()),
-                                          .ppEnabledLayerNames = enabledLayers.data(),
-                                          .enabledExtensionCount = static_cast<std::uint32_t>(enabledExtensions.size()),
-                                          .ppEnabledExtensionNames = enabledExtensions.data()};
-
-        instance = context.createInstance(createInfo);
-
-        // load function pointers with created instance
-        dldy.init(*instance);
-    }
     void selectPhysicalDevice() {
         // create a dispatcher, based on additional vkDevice/vkGetDeviceProcAddr
-        auto physicalDevices = instance.enumeratePhysicalDevices();
+        auto physicalDevices = vulkan.instance().enumeratePhysicalDevices();
 
         debug_throw_if(physicalDevices.empty(), "Failed to find GPUs with Vulkan support!");
 
@@ -214,9 +129,6 @@ private:
         };
 
         device = physicalDevice.createDevice(deviceCreateInfo);
-
-        // OPTIONAL: load function pointers for a specific vk::Device
-        dldy.init(*device);
 
         graphicsQueue = device.getQueue(graphicsQueueFamilyIndex, 0);
     }
@@ -279,15 +191,6 @@ private:
             renderFinishedSemaphores.push_back(device.createSemaphore({}));
         }
     }
-    void createSurface() {
-        vk::Win32SurfaceCreateInfoKHR win32SurfaceCreateInfo{
-            .hinstance = GetModuleHandle(nullptr),
-            .hwnd = glfwGetWin32Window(window),
-        };
-
-        surface = vk::raii::SurfaceKHR(instance, win32SurfaceCreateInfo);
-    }
-
     static vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR> &availableFormats) {
         for (const auto &availableFormat : availableFormats) {
             if (availableFormat.format == vk::Format::eB8G8R8A8Srgb &&
@@ -345,10 +248,9 @@ private:
         swapchainSurfaceFormat = chooseSwapSurfaceFormat(formats);
         vk::PresentModeKHR presentMode = chooseSwapPresentMode(presentModes);
 
-        int fbWidth = 0;
-        int fbHeight = 0;
-        glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-        swapchainExtent = chooseSwapExtent(capabilities, fbWidth, fbHeight);
+        const auto framebufferExtent = window.framebufferExtent();
+        swapchainExtent = chooseSwapExtent(capabilities, static_cast<int>(framebufferExtent.width),
+                                           static_cast<int>(framebufferExtent.height));
 
         std::uint32_t imageCount = capabilities.minImageCount + 1;
         if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
@@ -674,15 +576,11 @@ private:
     }
 
     void mainLoop() {
-        while (!glfwWindowShouldClose(window)) {
-            glfwPollEvents();
+        while (!window.shouldClose()) {
+            window.pollEvents();
             drawFrame();
         }
         device.waitIdle();
-    }
-    void cleanup() {
-        glfwDestroyWindow(window);
-        glfwTerminate();
     }
 };
 
