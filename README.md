@@ -8,7 +8,7 @@
 - **构建**：CMake 4.1+，编译器需支持C++23，可使用 
   - clang21+, `-stdlib=libc++`，
   - msvc
-- **示例依赖**：通过 Conan 获取 GLFW（窗口与表面）、GLM（数学）和 SPIRV-Reflect，公共代码放在 `common` 模块中。
+- **示例依赖**：通过 Conan 获取 GLFW（窗口与表面）、GLM（数学）、SPIRV-Reflect 和 TinyObjLoader（OBJ 载入），公共代码放在 `common` 模块中。
 
 ## 仓库结构（简要）
 
@@ -25,6 +25,7 @@
 - `triangle`：通过光栅管线向交换链绘制三角形。
 - `geometry`：使用 Geometry Shader 将输入点扩展为彩色三角形；需要 GPU 支持 `geometryShader` Feature。
 - `tessellation`：使用 Tessellation Control/Evaluation Shader 将 quad patch 细分为动态起伏的线框曲面；需要 GPU 支持 `tessellationShader` 和 `fillModeNonSolid` Feature。
+- `model`：使用 TinyObjLoader 载入 `assets/models/bunny.obj`，为没有法线的网格生成平滑法线，并通过顶点/索引缓冲进行光照渲染。
 - `raytracing`：使用 KHR Ray Tracing Pipeline、BLAS/TLAS 和 SBT 绘制光追三角形；需要支持 Vulkan 1.2、buffer device address、acceleration structure 和 ray tracing pipeline 的 GPU。
 
 ## 构建
