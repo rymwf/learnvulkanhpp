@@ -15,7 +15,9 @@ namespace {
 
 constexpr std::uint32_t shadowMapSize = 1024;
 constexpr std::uint32_t cascadeCount = 3;
-constexpr std::array cascadeSplitDistances = {4.5f, 9.0f, 20.0f};
+constexpr std::array cascadeSplitDistances = {20.0f, 70.0f, 200.0f};
+constexpr float cameraNearClip = 0.5f;
+constexpr float cameraFarClip = cascadeSplitDistances.back();
 constexpr float cameraVerticalFovRadians = 0.78539816339744830962f;
 constexpr float orbitRadiansPerPixel = 0.005f;
 
@@ -65,6 +67,17 @@ struct CascadeUniforms {
 
 static_assert(sizeof(CascadeUniforms) == 52 * sizeof(float));
 
+struct SceneGeometry {
+    std::vector<Vertex> vertices;
+    std::vector<std::uint32_t> indices;
+};
+
+struct BoxDefinition {
+    glm::vec3 minimum;
+    glm::vec3 maximum;
+    glm::vec3 color;
+};
+
 constexpr Vertex makeVertex(float px,
                             float py,
                             float pz,
@@ -81,66 +94,78 @@ constexpr Vertex makeVertex(float px,
     };
 }
 
-constexpr std::array<Vertex, 28> sceneVertices = {
-    // Ground plane.
-    makeVertex(-4.0f, 0.0f, -4.0f, 0.0f, 1.0f, 0.0f, 0.45f, 0.50f, 0.43f),
-    makeVertex(-4.0f, 0.0f, 4.0f, 0.0f, 1.0f, 0.0f, 0.45f, 0.50f, 0.43f),
-    makeVertex(4.0f, 0.0f, 4.0f, 0.0f, 1.0f, 0.0f, 0.45f, 0.50f, 0.43f),
-    makeVertex(4.0f, 0.0f, -4.0f, 0.0f, 1.0f, 0.0f, 0.45f, 0.50f, 0.43f),
+void appendFace(SceneGeometry &geometry,
+                glm::vec3 first,
+                glm::vec3 second,
+                glm::vec3 third,
+                glm::vec3 fourth,
+                glm::vec3 normal,
+                glm::vec3 color) {
+    const auto baseIndex = static_cast<std::uint32_t>(geometry.vertices.size());
+    const auto appendVertex = [&geometry, normal, color](glm::vec3 position) {
+        geometry.vertices.push_back(makeVertex(position.x, position.y, position.z, normal.x, normal.y, normal.z,
+                                               color.r, color.g, color.b));
+    };
+    appendVertex(first);
+    appendVertex(second);
+    appendVertex(third);
+    appendVertex(fourth);
+    geometry.indices.insert(geometry.indices.end(),
+                            {baseIndex, baseIndex + 1, baseIndex + 2, baseIndex, baseIndex + 2, baseIndex + 3});
+}
 
-    // +X face.
-    makeVertex(0.75f, 0.0f, -0.75f, 1.0f, 0.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 1.5f, -0.75f, 1.0f, 0.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 1.5f, 0.75f, 1.0f, 0.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 0.0f, 0.75f, 1.0f, 0.0f, 0.0f, 0.82f, 0.34f, 0.12f),
+void appendBox(SceneGeometry &geometry, const BoxDefinition &box) {
+    const auto &minimum = box.minimum;
+    const auto &maximum = box.maximum;
+    const auto &color = box.color;
 
-    // -X face.
-    makeVertex(-0.75f, 0.0f, 0.75f, -1.0f, 0.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(-0.75f, 1.5f, 0.75f, -1.0f, 0.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(-0.75f, 1.5f, -0.75f, -1.0f, 0.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(-0.75f, 0.0f, -0.75f, -1.0f, 0.0f, 0.0f, 0.82f, 0.34f, 0.12f),
+    appendFace(geometry, {maximum.x, minimum.y, minimum.z}, {maximum.x, maximum.y, minimum.z},
+               {maximum.x, maximum.y, maximum.z}, {maximum.x, minimum.y, maximum.z}, {1.0f, 0.0f, 0.0f}, color);
+    appendFace(geometry, {minimum.x, minimum.y, maximum.z}, {minimum.x, maximum.y, maximum.z},
+               {minimum.x, maximum.y, minimum.z}, {minimum.x, minimum.y, minimum.z}, {-1.0f, 0.0f, 0.0f}, color);
+    appendFace(geometry, {minimum.x, maximum.y, minimum.z}, {minimum.x, maximum.y, maximum.z},
+               {maximum.x, maximum.y, maximum.z}, {maximum.x, maximum.y, minimum.z}, {0.0f, 1.0f, 0.0f}, color);
+    appendFace(geometry, {minimum.x, minimum.y, maximum.z}, {minimum.x, minimum.y, minimum.z},
+               {maximum.x, minimum.y, minimum.z}, {maximum.x, minimum.y, maximum.z}, {0.0f, -1.0f, 0.0f}, color);
+    appendFace(geometry, {minimum.x, minimum.y, maximum.z}, {maximum.x, minimum.y, maximum.z},
+               {maximum.x, maximum.y, maximum.z}, {minimum.x, maximum.y, maximum.z}, {0.0f, 0.0f, 1.0f}, color);
+    appendFace(geometry, {maximum.x, minimum.y, minimum.z}, {minimum.x, minimum.y, minimum.z},
+               {minimum.x, maximum.y, minimum.z}, {maximum.x, maximum.y, minimum.z}, {0.0f, 0.0f, -1.0f}, color);
+}
 
-    // +Y face.
-    makeVertex(-0.75f, 1.5f, -0.75f, 0.0f, 1.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(-0.75f, 1.5f, 0.75f, 0.0f, 1.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 1.5f, 0.75f, 0.0f, 1.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 1.5f, -0.75f, 0.0f, 1.0f, 0.0f, 0.82f, 0.34f, 0.12f),
+SceneGeometry makeLargeSceneGeometry() {
+    const std::array<BoxDefinition, 12> buildings = {
+        BoxDefinition{{-7.0f, 0.0f, -16.0f}, {1.0f, 16.0f, -8.0f}, {0.78f, 0.34f, 0.14f}},
+        BoxDefinition{{3.0f, 0.0f, -13.0f}, {10.0f, 7.0f, -6.0f}, {0.28f, 0.48f, 0.72f}},
+        BoxDefinition{{-4.0f, 0.0f, 17.0f}, {4.0f, 11.0f, 25.0f}, {0.66f, 0.55f, 0.22f}},
+        BoxDefinition{{-32.0f, 0.0f, 36.0f}, {-20.0f, 10.0f, 48.0f}, {0.56f, 0.29f, 0.62f}},
+        BoxDefinition{{10.0f, 0.0f, 45.0f}, {22.0f, 20.0f, 58.0f}, {0.23f, 0.57f, 0.50f}},
+        BoxDefinition{{-7.0f, 0.0f, 63.0f}, {5.0f, 8.0f, 75.0f}, {0.72f, 0.42f, 0.18f}},
+        BoxDefinition{{-28.0f, 0.0f, 85.0f}, {-15.0f, 15.0f, 99.0f}, {0.25f, 0.38f, 0.67f}},
+        BoxDefinition{{16.0f, 0.0f, 104.0f}, {30.0f, 24.0f, 119.0f}, {0.67f, 0.28f, 0.35f}},
+        BoxDefinition{{-7.0f, 0.0f, 125.0f}, {7.0f, 11.0f, 139.0f}, {0.63f, 0.57f, 0.24f}},
+        BoxDefinition{{-38.0f, 0.0f, 149.0f}, {-23.0f, 32.0f, 165.0f}, {0.32f, 0.52f, 0.67f}},
+        BoxDefinition{{20.0f, 0.0f, 165.0f}, {35.0f, 16.0f, 181.0f}, {0.56f, 0.34f, 0.20f}},
+        BoxDefinition{{-8.0f, 0.0f, 177.0f}, {9.0f, 11.0f, 189.0f}, {0.38f, 0.58f, 0.37f}},
+    };
 
-    // -Y face.
-    makeVertex(-0.75f, 0.0f, 0.75f, 0.0f, -1.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(-0.75f, 0.0f, -0.75f, 0.0f, -1.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 0.0f, -0.75f, 0.0f, -1.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 0.0f, 0.75f, 0.0f, -1.0f, 0.0f, 0.82f, 0.34f, 0.12f),
-
-    // +Z face.
-    makeVertex(-0.75f, 0.0f, 0.75f, 0.0f, 0.0f, 1.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 0.0f, 0.75f, 0.0f, 0.0f, 1.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 1.5f, 0.75f, 0.0f, 0.0f, 1.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(-0.75f, 1.5f, 0.75f, 0.0f, 0.0f, 1.0f, 0.82f, 0.34f, 0.12f),
-
-    // -Z face.
-    makeVertex(0.75f, 0.0f, -0.75f, 0.0f, 0.0f, -1.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(-0.75f, 0.0f, -0.75f, 0.0f, 0.0f, -1.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(-0.75f, 1.5f, -0.75f, 0.0f, 0.0f, -1.0f, 0.82f, 0.34f, 0.12f),
-    makeVertex(0.75f, 1.5f, -0.75f, 0.0f, 0.0f, -1.0f, 0.82f, 0.34f, 0.12f),
-};
-
-constexpr std::array<std::uint32_t, 42> sceneIndices = {
-    0, 1, 2, 0, 2, 3,
-    4, 5, 6, 4, 6, 7,
-    8, 9, 10, 8, 10, 11,
-    12, 13, 14, 12, 14, 15,
-    16, 17, 18, 16, 18, 19,
-    20, 21, 22, 20, 22, 23,
-    24, 25, 26, 24, 26, 27,
-};
+    SceneGeometry geometry;
+    geometry.vertices.reserve(4 + buildings.size() * 24);
+    geometry.indices.reserve(6 + buildings.size() * 36);
+    appendFace(geometry, {-100.0f, 0.0f, -30.0f}, {-100.0f, 0.0f, 190.0f}, {100.0f, 0.0f, 190.0f},
+               {100.0f, 0.0f, -30.0f}, {0.0f, 1.0f, 0.0f}, {0.39f, 0.46f, 0.36f});
+    for (const auto &building : buildings) {
+        appendBox(geometry, building);
+    }
+    return geometry;
+}
 
 std::array<glm::mat4, cascadeCount> makeCascadeLightViewProjections(const glm::mat4 &cameraView,
                                                                       const glm::mat4 &cameraProjection) {
     const auto lightDirection = glm::normalize(glm::vec3{0.50f, 1.0f, -0.70f});
     const auto inverseCameraViewProjection = glm::inverse(cameraProjection * cameraView);
     std::array<glm::mat4, cascadeCount> result{};
-    float cascadeNearDistance = 0.1f;
+    float cascadeNearDistance = cameraNearClip;
 
     for (std::uint32_t cascadeIndex = 0; cascadeIndex < cascadeCount; ++cascadeIndex) {
         const float cascadeFarDistance = cascadeSplitDistances[cascadeIndex];
@@ -167,7 +192,8 @@ std::array<glm::mat4, cascadeCount> makeCascadeLightViewProjections(const glm::m
             center += corner;
         }
         center /= static_cast<float>(corners.size());
-        const auto lightView = glm::lookAtRH(center + lightDirection * 24.0f, center, glm::vec3{0.0f, 1.0f, 0.0f});
+        const auto lightView =
+            glm::lookAtRH(center + lightDirection * (cascadeFarDistance + 50.0f), center, glm::vec3{0.0f, 1.0f, 0.0f});
 
         glm::vec3 minimum{std::numeric_limits<float>::max()};
         glm::vec3 maximum{std::numeric_limits<float>::lowest()};
@@ -177,7 +203,12 @@ std::array<glm::mat4, cascadeCount> makeCascadeLightViewProjections(const glm::m
             maximum = glm::max(maximum, lightSpaceCorner);
         }
 
-        const glm::vec3 padding{1.5f, 1.5f, 6.0f};
+        const auto cascadeExtent = maximum - minimum;
+        const glm::vec3 padding{
+            std::max(4.0f, cascadeExtent.x * 0.12f),
+            std::max(4.0f, cascadeExtent.y * 0.12f),
+            24.0f,
+        };
         minimum -= padding;
         maximum += padding;
         const float nearPlane = std::max(0.1f, -maximum.z);
@@ -203,12 +234,12 @@ public:
               .apiVersion = vk::ApiVersion11,
           }),
           camera(OrbitCameraConfig{
-              .target = {0.0f, 0.5f, 0.0f},
-              .yawRadians = 2.35f,
-              .pitchRadians = 0.45f,
-              .distance = 7.0f,
-              .minDistance = 3.0f,
-              .maxDistance = 14.0f,
+              .target = {0.0f, 8.0f, 65.0f},
+              .yawRadians = -1.57079632679489661923f,
+              .pitchRadians = 0.32f,
+              .distance = 85.0f,
+              .minDistance = 20.0f,
+              .maxDistance = 180.0f,
           }) {}
 
 private:
@@ -258,7 +289,7 @@ private:
         const auto extent = swapchainExtent();
         const auto projection = glm::perspectiveRH_ZO(
             cameraVerticalFovRadians, static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u)),
-            0.1f, 20.0f);
+            cameraNearClip, cameraFarClip);
         const auto cameraView = camera.viewMatrix();
         const auto cascadeLightViewProjections = makeCascadeLightViewProjections(cameraView, projection);
         const CascadeUniforms cascadeUniforms{
@@ -366,12 +397,18 @@ private:
     }
 
     void createGeometryBuffers() {
-        indexCount = static_cast<std::uint32_t>(sceneIndices.size());
-        vertexBuffer = createHostVisibleBuffer(sizeof(sceneVertices), vk::BufferUsageFlagBits::eVertexBuffer);
-        uploadBuffer(vertexBuffer, sceneVertices.data(), sizeof(sceneVertices));
+        const auto scene = makeLargeSceneGeometry();
+        if (scene.vertices.empty() || scene.indices.empty()) {
+            throw std::runtime_error("CSM outdoor scene must contain geometry");
+        }
+        indexCount = static_cast<std::uint32_t>(scene.indices.size());
+        const auto vertexBufferSize = static_cast<vk::DeviceSize>(scene.vertices.size() * sizeof(Vertex));
+        vertexBuffer = createHostVisibleBuffer(vertexBufferSize, vk::BufferUsageFlagBits::eVertexBuffer);
+        uploadBuffer(vertexBuffer, scene.vertices.data(), vertexBufferSize);
 
-        indexBuffer = createHostVisibleBuffer(sizeof(sceneIndices), vk::BufferUsageFlagBits::eIndexBuffer);
-        uploadBuffer(indexBuffer, sceneIndices.data(), sizeof(sceneIndices));
+        const auto indexBufferSize = static_cast<vk::DeviceSize>(scene.indices.size() * sizeof(std::uint32_t));
+        indexBuffer = createHostVisibleBuffer(indexBufferSize, vk::BufferUsageFlagBits::eIndexBuffer);
+        uploadBuffer(indexBuffer, scene.indices.data(), indexBufferSize);
     }
 
     void createCascadeUniformBuffer() {
