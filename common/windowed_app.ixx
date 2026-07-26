@@ -5,6 +5,95 @@ import vulkan;
 import common.vulkan_instance;
 import common.window;
 
+export class DeviceFeatureChain {
+public:
+    template <typename... FeatureStructs>
+    static DeviceFeatureChain make(vk::PhysicalDeviceFeatures coreFeatures, FeatureStructs &&...featureStructs) {
+        using Chain = vk::StructureChain<vk::PhysicalDeviceFeatures2, std::remove_cvref_t<FeatureStructs>...>;
+        auto chain = std::make_shared<Chain>(vk::PhysicalDeviceFeatures2{
+                                                 .features = coreFeatures,
+                                             },
+                                             std::forward<FeatureStructs>(featureStructs)...);
+
+        DeviceFeatureChain result;
+        result.head_ = &chain->template get<vk::PhysicalDeviceFeatures2>();
+        result.supportCheck_ = [](const void *storage, const vk::raii::PhysicalDevice &candidate) {
+            const auto &requested = *static_cast<const Chain *>(storage);
+            const auto &requestedCore = requested.template get<vk::PhysicalDeviceFeatures2>().features;
+
+            if constexpr (sizeof...(FeatureStructs) == 0) {
+                const auto supported = candidate.getFeatures2();
+                return isRequestedFeatureSupported(requestedCore, supported.features);
+            } else {
+                const auto supported =
+                    candidate.getFeatures2<vk::PhysicalDeviceFeatures2, std::remove_cvref_t<FeatureStructs>...>();
+                return isRequestedFeatureSupported(
+                           requestedCore, supported.template get<vk::PhysicalDeviceFeatures2>().features) &&
+                       (isRequestedFeatureSupported(
+                            requested.template get<std::remove_cvref_t<FeatureStructs>>(),
+                            supported.template get<std::remove_cvref_t<FeatureStructs>>()) &&
+                        ...);
+            }
+        };
+        result.storage_ = std::move(chain);
+        return result;
+    }
+
+    [[nodiscard]] bool isSupportedBy(const vk::raii::PhysicalDevice &candidate) const {
+        return supportCheck_(storage_.get(), candidate);
+    }
+
+    [[nodiscard]] const void *data() const noexcept {
+        return head_;
+    }
+
+private:
+    using SupportCheck = bool (*)(const void *, const vk::raii::PhysicalDevice &);
+
+    template <std::size_t Offset, typename RequestedTuple, typename SupportedTuple, std::size_t... Indices>
+    static bool areRequestedFieldsSupported(const RequestedTuple &requested,
+                                            const SupportedTuple &supported,
+                                            std::index_sequence<Indices...>) {
+        using RequestedTupleType = std::remove_cvref_t<RequestedTuple>;
+        using SupportedTupleType = std::remove_cvref_t<SupportedTuple>;
+        static_assert(std::tuple_size_v<RequestedTupleType> == std::tuple_size_v<SupportedTupleType>);
+        static_assert((std::is_same_v<
+                           std::remove_cvref_t<std::tuple_element_t<Offset + Indices, RequestedTupleType>>,
+                           vk::Bool32> &&
+                       ...));
+
+        return ((!static_cast<bool>(std::get<Offset + Indices>(requested)) ||
+                 static_cast<bool>(std::get<Offset + Indices>(supported))) &&
+                ...);
+    }
+
+    template <std::size_t Offset, typename Feature>
+    static bool areRequestedFieldsSupported(const Feature &requested, const Feature &supported) {
+        const auto requestedFields = requested.reflect();
+        const auto supportedFields = supported.reflect();
+        using Fields = std::remove_cvref_t<decltype(requestedFields)>;
+        static_assert(std::tuple_size_v<Fields> >= Offset);
+        return areRequestedFieldsSupported<Offset>(
+            requestedFields, supportedFields, std::make_index_sequence<std::tuple_size_v<Fields> - Offset>{});
+    }
+
+    static bool isRequestedFeatureSupported(const vk::PhysicalDeviceFeatures &requested,
+                                            const vk::PhysicalDeviceFeatures &supported) {
+        return areRequestedFieldsSupported<0>(requested, supported);
+    }
+
+    template <typename Feature>
+    static bool isRequestedFeatureSupported(const Feature &requested, const Feature &supported) {
+        return areRequestedFieldsSupported<2>(requested, supported);
+    }
+
+    DeviceFeatureChain() = default;
+
+    std::shared_ptr<void> storage_;
+    const vk::PhysicalDeviceFeatures2 *head_ = nullptr;
+    SupportCheck supportCheck_ = nullptr;
+};
+
 export struct WindowedVulkanAppConfig {
     GlfwWindowConfig window;
     std::uint32_t apiVersion = vk::ApiVersion11;
@@ -65,7 +154,7 @@ public:
     }
 
 protected:
-    virtual bool supportsDeviceFeatures(const vk::raii::PhysicalDevice &) const {
+    virtual bool supportsAdditionalDeviceRequirements(const vk::raii::PhysicalDevice &) const {
         return true;
     }
 
@@ -73,10 +162,13 @@ protected:
         return {};
     }
 
-    virtual vk::raii::Device createLogicalDevice(const vk::raii::PhysicalDevice &candidate,
-                                                  const vk::DeviceQueueCreateInfo &queueCreateInfo) const {
-        const auto features = enabledDeviceFeatures();
+    virtual DeviceFeatureChain enabledDeviceFeatureChain() const {
+        return DeviceFeatureChain::make(enabledDeviceFeatures());
+    }
 
+    virtual vk::raii::Device createLogicalDevice(const vk::raii::PhysicalDevice &candidate,
+                                                  const vk::DeviceQueueCreateInfo &queueCreateInfo,
+                                                  const DeviceFeatureChain &featureChain) const {
         std::vector<const char *> extensionNames;
         extensionNames.reserve(config_.requiredDeviceExtensions.size());
         for (const auto &extension : config_.requiredDeviceExtensions) {
@@ -84,11 +176,11 @@ protected:
         }
 
         vk::DeviceCreateInfo createInfo{
+            .pNext = featureChain.data(),
             .queueCreateInfoCount = 1,
             .pQueueCreateInfos = &queueCreateInfo,
             .enabledExtensionCount = static_cast<std::uint32_t>(extensionNames.size()),
             .ppEnabledExtensionNames = extensionNames.data(),
-            .pEnabledFeatures = &features,
         };
         return candidate.createDevice(createInfo);
     }
@@ -383,8 +475,9 @@ private:
     }
 
     void initialize() {
-        selectPhysicalDevice();
-        createDevice();
+        const auto featureChain = enabledDeviceFeatureChain();
+        selectPhysicalDevice(featureChain);
+        createDevice(featureChain);
         createCommandPool();
         createSwapchain();
         swapchainRenderPassResources_ = createSwapchainRenderPassResources();
@@ -394,7 +487,7 @@ private:
         createSyncObjects();
     }
 
-    void selectPhysicalDevice() {
+    void selectPhysicalDevice(const DeviceFeatureChain &featureChain) {
         const auto candidates = vulkan_.instance().enumeratePhysicalDevices();
         if (candidates.empty()) {
             throw std::runtime_error("Failed to find GPUs with Vulkan support");
@@ -410,7 +503,7 @@ private:
         for (const auto &candidate : candidates) {
             const auto properties = candidate.getProperties();
             if (properties.apiVersion < config_.apiVersion || !supportsRequiredExtensions(candidate) ||
-                !supportsDeviceFeatures(candidate)) {
+                !featureChain.isSupportedBy(candidate) || !supportsAdditionalDeviceRequirements(candidate)) {
                 continue;
             }
             const auto queueFamily = findGraphicsPresentQueue(candidate);
@@ -430,14 +523,14 @@ private:
             config_.window.title));
     }
 
-    void createDevice() {
+    void createDevice(const DeviceFeatureChain &featureChain) {
         const float priority = 1.0f;
         vk::DeviceQueueCreateInfo queueCreateInfo{
             .queueFamilyIndex = graphicsQueueFamilyIndex_,
             .queueCount = 1,
             .pQueuePriorities = &priority,
         };
-        device_ = createLogicalDevice(physicalDevice_, queueCreateInfo);
+        device_ = createLogicalDevice(physicalDevice_, queueCreateInfo, featureChain);
         graphicsQueue_ = device_.getQueue(graphicsQueueFamilyIndex_, 0);
     }
 

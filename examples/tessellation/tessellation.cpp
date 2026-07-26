@@ -35,11 +35,6 @@ private:
 
     std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
 
-    bool supportsDeviceFeatures(const vk::raii::PhysicalDevice &candidate) const override {
-        const auto features = candidate.getFeatures();
-        return features.tessellationShader && features.fillModeNonSolid;
-    }
-
     vk::PhysicalDeviceFeatures enabledDeviceFeatures() const override {
         return {
             .tessellationShader = true,

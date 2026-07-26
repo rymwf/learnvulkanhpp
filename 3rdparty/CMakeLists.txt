@@ -3,6 +3,7 @@ add_library(Vulkan::cppm ALIAS VulkanCppModule)
 
 target_compile_definitions(VulkanCppModule PUBLIC
     VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
+    VULKAN_HPP_USE_REFLECT=1
     VULKAN_HPP_NO_STRUCT_CONSTRUCTORS=1
     VULKAN_HPP_NO_CONSTRUCTORS # use designated initializers
 )

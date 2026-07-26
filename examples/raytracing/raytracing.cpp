@@ -98,21 +98,7 @@ private:
         createShaderBindingTable();
     }
 
-    bool supportsDeviceFeatures(const vk::raii::PhysicalDevice &candidate) const override {
-        if (candidate.getProperties().apiVersion < vk::ApiVersion12) {
-            return false;
-        }
-
-        const auto features = candidate.getFeatures2<vk::PhysicalDeviceFeatures2,
-                                                     vk::PhysicalDeviceBufferDeviceAddressFeatures,
-                                                     vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
-                                                     vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>();
-        if (!features.get<vk::PhysicalDeviceBufferDeviceAddressFeatures>().bufferDeviceAddress ||
-            !features.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure ||
-            !features.get<vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>().rayTracingPipeline) {
-            return false;
-        }
-
+    bool supportsAdditionalDeviceRequirements(const vk::raii::PhysicalDevice &candidate) const override {
         // These checks ensure the base can create the transfer-destination swapchain used by the blit path.
         const auto capabilities = candidate.getSurfaceCapabilitiesKHR(*surface());
         if (!(capabilities.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferDst)) {
@@ -139,35 +125,18 @@ private:
         return properties.get<vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>().maxRayRecursionDepth >= 1;
     }
 
-    vk::raii::Device createLogicalDevice(const vk::raii::PhysicalDevice &candidate,
-                                         const vk::DeviceQueueCreateInfo &queueCreateInfo) const override {
-        vk::PhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{
-            .bufferDeviceAddress = true,
-        };
-        vk::PhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
-            .pNext = &bufferDeviceAddressFeatures,
-            .accelerationStructure = true,
-        };
-        vk::PhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
-            .pNext = &accelerationStructureFeatures,
-            .rayTracingPipeline = true,
-        };
-
-        const auto &extensions = requiredDeviceExtensions();
-        std::vector<const char *> extensionNames;
-        extensionNames.reserve(extensions.size());
-        for (const auto &extension : extensions) {
-            extensionNames.push_back(extension.c_str());
-        }
-
-        vk::DeviceCreateInfo createInfo{
-            .pNext = &rayTracingPipelineFeatures,
-            .queueCreateInfoCount = 1,
-            .pQueueCreateInfos = &queueCreateInfo,
-            .enabledExtensionCount = static_cast<std::uint32_t>(extensionNames.size()),
-            .ppEnabledExtensionNames = extensionNames.data(),
-        };
-        return candidate.createDevice(createInfo);
+    DeviceFeatureChain enabledDeviceFeatureChain() const override {
+        return DeviceFeatureChain::make(
+            vk::PhysicalDeviceFeatures{},
+            vk::PhysicalDeviceBufferDeviceAddressFeatures{
+                .bufferDeviceAddress = true,
+            },
+            vk::PhysicalDeviceAccelerationStructureFeaturesKHR{
+                .accelerationStructure = true,
+            },
+            vk::PhysicalDeviceRayTracingPipelineFeaturesKHR{
+                .rayTracingPipeline = true,
+            });
     }
 
     void loadRayTracingProperties() {

@@ -25,10 +25,6 @@ private:
     vk::raii::PipelineLayout pipelineLayout = nullptr;
     vk::raii::Pipeline graphicsPipeline = nullptr;
 
-    bool supportsDeviceFeatures(const vk::raii::PhysicalDevice &candidate) const override {
-        return candidate.getFeatures().geometryShader;
-    }
-
     vk::PhysicalDeviceFeatures enabledDeviceFeatures() const override {
         return {
             .geometryShader = true,
