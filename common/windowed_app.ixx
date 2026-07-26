@@ -239,6 +239,7 @@ private:
         commandPool_ = device_.createCommandPool(createInfo);
     }
 
+protected:
     static vk::SurfaceFormatKHR chooseSurfaceFormat(const std::vector<vk::SurfaceFormatKHR> &formats) {
         for (const auto &format : formats) {
             if (format.format == vk::Format::eB8G8R8A8Srgb &&
@@ -249,6 +250,7 @@ private:
         return formats.front();
     }
 
+private:
     static vk::PresentModeKHR choosePresentMode(const std::vector<vk::PresentModeKHR> &presentModes) {
         if (std::ranges::find(presentModes, vk::PresentModeKHR::eMailbox) != presentModes.end()) {
             return vk::PresentModeKHR::eMailbox;
@@ -292,6 +294,9 @@ private:
         }
         if (presentModes.empty()) {
             throw std::runtime_error("No present modes are available");
+        }
+        if ((capabilities.supportedUsageFlags & config_.swapchainImageUsage) != config_.swapchainImageUsage) {
+            throw std::runtime_error("The window surface does not support the requested swapchain image usage");
         }
 
         swapchainSurfaceFormat_ = chooseSurfaceFormat(formats);
