@@ -26,6 +26,9 @@ export enum class GlfwMouseButton : int {
 };
 
 export enum class GlfwKey : int {
+    One = GLFW_KEY_1,
+    Two = GLFW_KEY_2,
+    Three = GLFW_KEY_3,
     R = GLFW_KEY_R,
 };
 
