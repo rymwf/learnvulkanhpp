@@ -26,6 +26,7 @@
 - `geometry`：使用 Geometry Shader 将输入点扩展为彩色三角形；需要 GPU 支持 `geometryShader` Feature。
 - `tessellation`：使用 Tessellation Control/Evaluation Shader 将 quad patch 细分为动态起伏的线框曲面；需要 GPU 支持 `tessellationShader` 和 `fillModeNonSolid` Feature。
 - `model`：使用 TinyObjLoader 载入 `assets/models/bunny.obj`，为没有法线的网格生成平滑法线，并通过顶点/索引缓冲进行光照渲染。左键拖动旋转，中键拖动平移，滚轮缩放，`R` 重置视角。
+- `shadow`：使用方向光 2D Shadow Map 进行两遍光栅化，内置平面和立方体展示硬阴影，并始终在右上角显示深度图预览。左键拖动旋转，中键拖动平移，滚轮缩放，`R` 重置视角。
 - `raytracing`：使用 KHR Ray Tracing Pipeline、BLAS/TLAS 和 SBT 绘制光追三角形；需要支持 Vulkan 1.2、buffer device address、acceleration structure 和 ray tracing pipeline 的 GPU。
 - `rayquery`：使用 BLAS/TLAS 和 `VK_KHR_ray_query` 在 fragment shader 中查询静态场景的硬阴影；不使用 KHR Ray Tracing Pipeline 或 SBT，需要支持 Vulkan 1.2、buffer device address、acceleration structure 和 ray query 的 GPU。
 
