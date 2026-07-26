@@ -7,7 +7,7 @@ import common.window;
 
 export struct WindowedVulkanAppConfig {
     GlfwWindowConfig window;
-    std::uint32_t apiVersion = vk::ApiVersion10;
+    std::uint32_t apiVersion = vk::ApiVersion11;
     std::vector<std::string> requiredDeviceExtensions = {"VK_KHR_swapchain"};
     std::uint32_t framesInFlight = 2;
     vk::ImageUsageFlags swapchainImageUsage = vk::ImageUsageFlagBits::eColorAttachment;
@@ -408,7 +408,9 @@ private:
         }
 
         for (const auto &candidate : candidates) {
-            if (!supportsRequiredExtensions(candidate) || !supportsDeviceFeatures(candidate)) {
+            const auto properties = candidate.getProperties();
+            if (properties.apiVersion < config_.apiVersion || !supportsRequiredExtensions(candidate) ||
+                !supportsDeviceFeatures(candidate)) {
                 continue;
             }
             const auto queueFamily = findGraphicsPresentQueue(candidate);
@@ -423,7 +425,8 @@ private:
         }
 
         throw std::runtime_error(std::format(
-            "No suitable GPU found for {} (required device extensions, features, and graphics/present support)",
+            "No suitable GPU found for {} (Vulkan API version, required device extensions, features, and "
+            "graphics/present support)",
             config_.window.title));
     }
 

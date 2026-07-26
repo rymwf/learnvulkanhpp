@@ -22,7 +22,7 @@ public:
                   .height = 768,
                   .title = "Vulkan Tessellation Shader",
               },
-              .apiVersion = vk::ApiVersion10,
+              .apiVersion = vk::ApiVersion11,
           }) {}
 
 private:
@@ -135,9 +135,9 @@ private:
         const auto extent = swapchainExtent();
         vk::Viewport viewport{
             .x = 0.f,
-            .y = 0.f,
+            .y = static_cast<float>(extent.height),
             .width = static_cast<float>(extent.width),
-            .height = static_cast<float>(extent.height),
+            .height = -static_cast<float>(extent.height),
             .minDepth = 0.f,
             .maxDepth = 1.f,
         };

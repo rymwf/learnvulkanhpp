@@ -168,7 +168,7 @@ public:
                   .height = 768,
                   .title = "Vulkan TinyObjLoader Bunny",
               },
-              .apiVersion = vk::ApiVersion10,
+              .apiVersion = vk::ApiVersion11,
           }) {}
 
 private:
@@ -196,7 +196,6 @@ private:
         auto projection = glm::perspectiveRH_ZO(cameraVerticalFovRadians,
                                                 static_cast<float>(extent.width) / static_cast<float>(extent.height),
                                                 0.1f, 10.0f);
-        projection[1][1] *= -1.0f;
         const ViewProjectionPushConstants pushConstants{
             .viewProjection = projection * camera.viewMatrix(),
         };
@@ -228,8 +227,8 @@ private:
                     camera.pan(horizontalPixels, verticalPixels, cameraVerticalFovRadians,
                                static_cast<float>(std::max(extent.height, 1u)));
                 } else {
-                    camera.orbit(-horizontalPixels * orbitRadiansPerPixel,
-                                 -verticalPixels * orbitRadiansPerPixel);
+                    camera.orbit(horizontalPixels * orbitRadiansPerPixel,
+                                 verticalPixels * orbitRadiansPerPixel);
                 }
             }
             previousDragCursor = cursor;
@@ -342,9 +341,9 @@ private:
         const auto extent = swapchainExtent();
         const vk::Viewport viewport{
             .x = 0.0f,
-            .y = 0.0f,
+            .y = static_cast<float>(extent.height),
             .width = static_cast<float>(extent.width),
-            .height = static_cast<float>(extent.height),
+            .height = -static_cast<float>(extent.height),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
         };
@@ -358,7 +357,7 @@ private:
         const vk::PipelineRasterizationStateCreateInfo rasterizer{
             .polygonMode = vk::PolygonMode::eFill,
             .cullMode = vk::CullModeFlagBits::eBack,
-            .frontFace = vk::FrontFace::eClockwise,
+            .frontFace = vk::FrontFace::eCounterClockwise,
             .lineWidth = 1.0f,
         };
         const vk::PipelineMultisampleStateCreateInfo multisampling{};
