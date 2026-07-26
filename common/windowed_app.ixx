@@ -105,6 +105,14 @@ protected:
         return graphicsQueueFamilyIndex_;
     }
 
+    [[nodiscard]] GlfwWindow &window() noexcept {
+        return window_;
+    }
+
+    [[nodiscard]] const GlfwWindow &window() const noexcept {
+        return window_;
+    }
+
     [[nodiscard]] vk::SurfaceFormatKHR swapchainSurfaceFormat() const noexcept {
         return swapchainSurfaceFormat_;
     }

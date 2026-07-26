@@ -15,6 +15,20 @@ export struct GlfwWindowConfig {
     bool resizable = false;
 };
 
+export struct GlfwCursorPosition {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+export enum class GlfwMouseButton : int {
+    Left = GLFW_MOUSE_BUTTON_LEFT,
+    Middle = GLFW_MOUSE_BUTTON_MIDDLE,
+};
+
+export enum class GlfwKey : int {
+    R = GLFW_KEY_R,
+};
+
 export class GlfwWindow {
 public:
     explicit GlfwWindow(GlfwWindowConfig config) {
@@ -37,6 +51,9 @@ public:
             initialized_ = false;
             throw std::runtime_error("Failed to create GLFW window");
         }
+
+        glfwSetWindowUserPointer(window_, this);
+        glfwSetScrollCallback(window_, scrollCallback);
     }
 
     ~GlfwWindow() {
@@ -95,11 +112,37 @@ public:
         return glfwWindowShouldClose(window_) == GLFW_TRUE;
     }
 
+    [[nodiscard]] GlfwCursorPosition cursorPosition() const {
+        GlfwCursorPosition position;
+        glfwGetCursorPos(window_, &position.x, &position.y);
+        return position;
+    }
+
+    [[nodiscard]] bool isPressed(GlfwMouseButton button) const {
+        return glfwGetMouseButton(window_, static_cast<int>(button)) == GLFW_PRESS;
+    }
+
+    [[nodiscard]] bool isPressed(GlfwKey key) const {
+        return glfwGetKey(window_, static_cast<int>(key)) == GLFW_PRESS;
+    }
+
+    [[nodiscard]] double consumeScrollYOffset() noexcept {
+        return std::exchange(scrollYOffset_, 0.0);
+    }
+
     void pollEvents() const {
         glfwPollEvents();
     }
 
 private:
+    static void scrollCallback(GLFWwindow *window, double, double yOffset) {
+        auto *self = static_cast<GlfwWindow *>(glfwGetWindowUserPointer(window));
+        if (self != nullptr) {
+            self->scrollYOffset_ += yOffset;
+        }
+    }
+
     GLFWwindow *window_ = nullptr;
     bool initialized_ = false;
+    double scrollYOffset_ = 0.0;
 };

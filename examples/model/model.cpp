@@ -1,5 +1,4 @@
 #include <glm/ext/matrix_clip_space.hpp>
-#include <glm/ext/matrix_transform.hpp>
 #include <glm/glm.hpp>
 #include <tiny_obj_loader.h>
 
@@ -41,6 +40,8 @@ struct ViewProjectionPushConstants {
 static_assert(sizeof(ViewProjectionPushConstants) == 16 * sizeof(float));
 
 constexpr float minimumNormalLengthSquared = 1.0e-20f;
+constexpr float cameraVerticalFovRadians = 0.78539816339744830962f;
+constexpr float orbitRadiansPerPixel = 0.005f;
 
 glm::vec3 readPosition(const tinyobj::attrib_t &attributes, std::uint32_t index) {
     const auto offset = static_cast<std::size_t>(index) * 3;
@@ -186,6 +187,9 @@ private:
     vk::raii::PipelineLayout pipelineLayout = nullptr;
     vk::raii::Pipeline graphicsPipeline = nullptr;
     std::vector<vk::raii::Framebuffer> framebuffers;
+    OrbitCamera camera;
+    std::optional<GlfwCursorPosition> previousDragCursor;
+    bool resetKeyWasPressed = false;
 
     void createApplicationResources() override {
         createGeometryBuffers();
@@ -208,14 +212,15 @@ private:
             .pClearValues = clearValues.data(),
         };
 
+        updateCameraFromInput();
+
         const auto extent = swapchainExtent();
-        auto projection = glm::perspectiveRH_ZO(glm::radians(45.0f),
+        auto projection = glm::perspectiveRH_ZO(cameraVerticalFovRadians,
                                                 static_cast<float>(extent.width) / static_cast<float>(extent.height),
                                                 0.1f, 10.0f);
         projection[1][1] *= -1.0f;
         const ViewProjectionPushConstants pushConstants{
-            .viewProjection = projection * glm::lookAtRH(glm::vec3{-3.5f, 1.8f, 3.5f}, glm::vec3{0.0f},
-                                                          glm::vec3{0.0f, 1.0f, 0.0f}),
+            .viewProjection = projection * camera.viewMatrix(),
         };
 
         const vk::Buffer rawVertexBuffer = *vertexBuffer.buffer;
@@ -228,6 +233,40 @@ private:
                                     static_cast<std::uint32_t>(sizeof(pushConstants)), &pushConstants);
         commandBuffer.drawIndexed(indexCount, 1, 0, 0, 0);
         commandBuffer.endRenderPass();
+    }
+
+    void updateCameraFromInput() {
+        auto &inputWindow = window();
+        const auto cursor = inputWindow.cursorPosition();
+        const auto panning = inputWindow.isPressed(GlfwMouseButton::Middle);
+        const auto orbiting = inputWindow.isPressed(GlfwMouseButton::Left);
+
+        if (panning || orbiting) {
+            if (previousDragCursor) {
+                const auto horizontalPixels = static_cast<float>(cursor.x - previousDragCursor->x);
+                const auto verticalPixels = static_cast<float>(cursor.y - previousDragCursor->y);
+                if (panning) {
+                    const auto extent = swapchainExtent();
+                    camera.pan(horizontalPixels, verticalPixels, cameraVerticalFovRadians,
+                               static_cast<float>(std::max(extent.height, 1u)));
+                } else {
+                    camera.orbit(-horizontalPixels * orbitRadiansPerPixel,
+                                 -verticalPixels * orbitRadiansPerPixel);
+                }
+            }
+            previousDragCursor = cursor;
+        } else {
+            previousDragCursor.reset();
+        }
+
+        camera.zoom(static_cast<float>(inputWindow.consumeScrollYOffset()));
+
+        const auto resetPressed = inputWindow.isPressed(GlfwKey::R);
+        if (resetPressed && !resetKeyWasPressed) {
+            camera.reset();
+            previousDragCursor.reset();
+        }
+        resetKeyWasPressed = resetPressed;
     }
 
     BufferResource createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage) {
