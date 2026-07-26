@@ -84,6 +84,10 @@ private:
     vk::StridedDeviceAddressRegionKHR hitRegion{};
     vk::StridedDeviceAddressRegionKHR callableRegion{};
 
+    std::optional<SwapchainRenderPassResources> createSwapchainRenderPassResources() override {
+        return std::nullopt;
+    }
+
     void createApplicationResources() override {
         loadRayTracingProperties();
         createOutputImage();

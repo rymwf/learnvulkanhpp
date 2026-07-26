@@ -14,6 +14,21 @@ export struct WindowedVulkanAppConfig {
     vk::PipelineStageFlags submitWaitStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
 };
 
+export struct SwapchainAttachmentResource {
+    vk::raii::DeviceMemory memory = nullptr;
+    vk::raii::Image image = nullptr;
+    vk::raii::ImageView imageView = nullptr;
+};
+
+export struct SwapchainRenderPassResources {
+    // Members are ordered so Vulkan object destruction runs from framebuffers back to memory.
+    std::vector<SwapchainAttachmentResource> ownedAttachments;
+    std::vector<vk::raii::ImageView> swapchainImageViews;
+    vk::raii::RenderPass renderPass = nullptr;
+    std::vector<vk::raii::Framebuffer> framebuffers;
+    std::vector<vk::ClearValue> defaultClearValues;
+};
+
 export class WindowedVulkanApp {
 public:
     explicit WindowedVulkanApp(WindowedVulkanAppConfig config)
@@ -78,6 +93,152 @@ protected:
         return candidate.createDevice(createInfo);
     }
 
+    virtual std::optional<SwapchainRenderPassResources> createSwapchainRenderPassResources() {
+        if ((config_.swapchainImageUsage & vk::ImageUsageFlagBits::eColorAttachment) == vk::ImageUsageFlags{}) {
+            throw std::runtime_error(
+                "The default swapchain render pass requires eColorAttachment image usage; "
+                "override createSwapchainRenderPassResources() to provide a custom path");
+        }
+
+        const auto depthFormat = findSupportedDepthFormat();
+        const auto extent = swapchainExtent_;
+        SwapchainRenderPassResources resources;
+        resources.ownedAttachments.reserve(swapchainImages_.size());
+        resources.swapchainImageViews.reserve(swapchainImages_.size());
+        resources.framebuffers.reserve(swapchainImages_.size());
+
+        for (const auto swapchainImage : swapchainImages_) {
+            resources.swapchainImageViews.push_back(device_.createImageView({
+                .image = swapchainImage,
+                .viewType = vk::ImageViewType::e2D,
+                .format = swapchainSurfaceFormat_.format,
+                .subresourceRange =
+                    {
+                        .aspectMask = vk::ImageAspectFlagBits::eColor,
+                        .baseMipLevel = 0,
+                        .levelCount = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount = 1,
+                    },
+            }));
+
+            resources.ownedAttachments.emplace_back();
+            auto &depthAttachment = resources.ownedAttachments.back();
+            depthAttachment.image = device_.createImage({
+                .imageType = vk::ImageType::e2D,
+                .format = depthFormat,
+                .extent = {extent.width, extent.height, 1},
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = vk::SampleCountFlagBits::e1,
+                .tiling = vk::ImageTiling::eOptimal,
+                .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                .sharingMode = vk::SharingMode::eExclusive,
+                .initialLayout = vk::ImageLayout::eUndefined,
+            });
+
+            const auto memoryRequirements = depthAttachment.image.getMemoryRequirements();
+            depthAttachment.memory = vk::raii::DeviceMemory(
+                device_,
+                {
+                    .allocationSize = memoryRequirements.size,
+                    .memoryTypeIndex = findMemoryTypeIndex(memoryRequirements,
+                                                           vk::MemoryPropertyFlagBits::eDeviceLocal),
+                });
+            depthAttachment.image.bindMemory(*depthAttachment.memory, 0);
+
+            depthAttachment.imageView = device_.createImageView({
+                .image = *depthAttachment.image,
+                .viewType = vk::ImageViewType::e2D,
+                .format = depthFormat,
+                .subresourceRange =
+                    {
+                        .aspectMask = depthAspectMask(depthFormat),
+                        .baseMipLevel = 0,
+                        .levelCount = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount = 1,
+                    },
+            });
+        }
+
+        std::array attachments = {
+            vk::AttachmentDescription{
+                .format = swapchainSurfaceFormat_.format,
+                .samples = vk::SampleCountFlagBits::e1,
+                .loadOp = vk::AttachmentLoadOp::eClear,
+                .storeOp = vk::AttachmentStoreOp::eStore,
+                .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+                .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+                .initialLayout = vk::ImageLayout::eUndefined,
+                .finalLayout = vk::ImageLayout::ePresentSrcKHR,
+            },
+            vk::AttachmentDescription{
+                .format = depthFormat,
+                .samples = vk::SampleCountFlagBits::e1,
+                .loadOp = vk::AttachmentLoadOp::eClear,
+                .storeOp = vk::AttachmentStoreOp::eDontCare,
+                .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
+                .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
+                .initialLayout = vk::ImageLayout::eUndefined,
+                .finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+            },
+        };
+        vk::AttachmentReference colorAttachment{
+            .attachment = 0,
+            .layout = vk::ImageLayout::eColorAttachmentOptimal,
+        };
+        vk::AttachmentReference depthAttachment{
+            .attachment = 1,
+            .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+        };
+        vk::SubpassDescription subpass{
+            .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &colorAttachment,
+            .pDepthStencilAttachment = &depthAttachment,
+        };
+        vk::SubpassDependency dependency{
+            .srcSubpass = std::numeric_limits<std::uint32_t>::max(),
+            .dstSubpass = 0,
+            .srcStageMask =
+                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+            .dstStageMask =
+                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+            .srcAccessMask = {},
+            .dstAccessMask =
+                vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+        };
+        resources.renderPass = device_.createRenderPass({
+            .attachmentCount = static_cast<std::uint32_t>(attachments.size()),
+            .pAttachments = attachments.data(),
+            .subpassCount = 1,
+            .pSubpasses = &subpass,
+            .dependencyCount = 1,
+            .pDependencies = &dependency,
+        });
+
+        for (std::size_t index = 0; index < swapchainImages_.size(); ++index) {
+            const std::array framebufferAttachments = {
+                *resources.swapchainImageViews[index],
+                *resources.ownedAttachments[index].imageView,
+            };
+            resources.framebuffers.push_back(device_.createFramebuffer({
+                .renderPass = *resources.renderPass,
+                .attachmentCount = static_cast<std::uint32_t>(framebufferAttachments.size()),
+                .pAttachments = framebufferAttachments.data(),
+                .width = extent.width,
+                .height = extent.height,
+                .layers = 1,
+            }));
+        }
+
+        resources.defaultClearValues = {vk::ClearValue{}, vk::ClearValue{}};
+        resources.defaultClearValues[0].color.setFloat32(std::array<float, 4>{0.02f, 0.02f, 0.08f, 1.0f});
+        resources.defaultClearValues[1].depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
+        return resources;
+    }
+
     virtual void createApplicationResources() = 0;
     virtual void recordFrameCommands(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex) = 0;
 
@@ -127,6 +288,42 @@ protected:
 
     [[nodiscard]] const std::vector<std::string> &requiredDeviceExtensions() const noexcept {
         return config_.requiredDeviceExtensions;
+    }
+
+    [[nodiscard]] bool hasSwapchainRenderPass() const noexcept {
+        return swapchainRenderPassResources_.has_value();
+    }
+
+    [[nodiscard]] vk::RenderPass swapchainRenderPass() const {
+        return *requireSwapchainRenderPassResources().renderPass;
+    }
+
+    [[nodiscard]] vk::Framebuffer swapchainFramebuffer(std::uint32_t imageIndex) const {
+        const auto &resources = requireSwapchainRenderPassResources();
+        if (imageIndex >= resources.framebuffers.size()) {
+            throw std::out_of_range("Swapchain framebuffer index is out of range");
+        }
+        return *resources.framebuffers[imageIndex];
+    }
+
+    void beginSwapchainRenderPass(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex,
+                                  vk::SubpassContents contents = vk::SubpassContents::eInline) const {
+        const auto &clearValues = requireSwapchainRenderPassResources().defaultClearValues;
+        beginSwapchainRenderPass(commandBuffer, imageIndex,
+                                 std::span<const vk::ClearValue>{clearValues.data(), clearValues.size()}, contents);
+    }
+
+    void beginSwapchainRenderPass(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex,
+                                  std::span<const vk::ClearValue> clearValues,
+                                  vk::SubpassContents contents = vk::SubpassContents::eInline) const {
+        vk::RenderPassBeginInfo beginInfo{
+            .renderPass = swapchainRenderPass(),
+            .framebuffer = swapchainFramebuffer(imageIndex),
+            .renderArea = {.offset = {0, 0}, .extent = swapchainExtent_},
+            .clearValueCount = static_cast<std::uint32_t>(clearValues.size()),
+            .pClearValues = clearValues.data(),
+        };
+        commandBuffer.beginRenderPass(beginInfo, contents);
     }
 
     [[nodiscard]] std::uint32_t findMemoryTypeIndex(const vk::MemoryRequirements &memoryRequirements,
@@ -190,6 +387,8 @@ private:
         createDevice();
         createCommandPool();
         createSwapchain();
+        swapchainRenderPassResources_ = createSwapchainRenderPassResources();
+        validateSwapchainRenderPassResources();
         createApplicationResources();
         createCommandBuffers();
         createSyncObjects();
@@ -291,6 +490,53 @@ private:
             }
         }
         throw std::runtime_error("Surface does not report a supported composite alpha mode");
+    }
+
+    [[nodiscard]] vk::Format findSupportedDepthFormat() const {
+        constexpr std::array candidates = {
+            vk::Format::eD32Sfloat,
+            vk::Format::eD32SfloatS8Uint,
+            vk::Format::eD24UnormS8Uint,
+            vk::Format::eD16Unorm,
+        };
+        for (const auto format : candidates) {
+            if (physicalDevice_.getFormatProperties(format).optimalTilingFeatures &
+                vk::FormatFeatureFlagBits::eDepthStencilAttachment) {
+                return format;
+            }
+        }
+        throw std::runtime_error("No supported depth-stencil attachment format is available");
+    }
+
+    static vk::ImageAspectFlags depthAspectMask(vk::Format format) {
+        switch (format) {
+        case vk::Format::eD32SfloatS8Uint:
+        case vk::Format::eD24UnormS8Uint:
+            return vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+        default:
+            return vk::ImageAspectFlagBits::eDepth;
+        }
+    }
+
+    [[nodiscard]] const SwapchainRenderPassResources &requireSwapchainRenderPassResources() const {
+        if (!swapchainRenderPassResources_) {
+            throw std::logic_error("This application did not create swapchain render pass resources");
+        }
+        return *swapchainRenderPassResources_;
+    }
+
+    void validateSwapchainRenderPassResources() const {
+        if (!swapchainRenderPassResources_) {
+            return;
+        }
+
+        const auto &resources = *swapchainRenderPassResources_;
+        if (*resources.renderPass == vk::RenderPass{}) {
+            throw std::runtime_error("Swapchain render pass resources must contain a render pass");
+        }
+        if (resources.framebuffers.size() != swapchainImages_.size()) {
+            throw std::runtime_error("Swapchain render pass resources must provide one framebuffer per swapchain image");
+        }
     }
 
     void createSwapchain() {
@@ -453,6 +699,7 @@ private:
     vk::SurfaceFormatKHR swapchainSurfaceFormat_{};
     vk::Extent2D swapchainExtent_{};
     std::vector<vk::Image> swapchainImages_;
+    std::optional<SwapchainRenderPassResources> swapchainRenderPassResources_;
     std::vector<vk::raii::CommandBuffer> commandBuffers_;
     std::vector<vk::raii::Semaphore> imageAvailableSemaphores_;
     std::vector<vk::raii::Semaphore> renderFinishedSemaphores_;

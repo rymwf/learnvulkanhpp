@@ -172,46 +172,24 @@ public:
           }) {}
 
 private:
-    std::vector<vk::raii::ImageView> imageViews;
-    std::vector<vk::raii::Image> depthImages;
-    std::vector<vk::raii::DeviceMemory> depthImageMemories;
-    std::vector<vk::raii::ImageView> depthImageViews;
-
     BufferResource vertexBuffer;
     BufferResource indexBuffer;
     std::uint32_t indexCount = 0;
 
-    vk::raii::RenderPass renderPass = nullptr;
     vk::raii::ShaderModule vertShaderModule = nullptr;
     vk::raii::ShaderModule fragShaderModule = nullptr;
     vk::raii::PipelineLayout pipelineLayout = nullptr;
     vk::raii::Pipeline graphicsPipeline = nullptr;
-    std::vector<vk::raii::Framebuffer> framebuffers;
     OrbitCamera camera;
     std::optional<GlfwCursorPosition> previousDragCursor;
     bool resetKeyWasPressed = false;
 
     void createApplicationResources() override {
         createGeometryBuffers();
-        createRenderTargets();
-        createRenderPass();
         createGraphicsPipeline();
-        createFramebuffers();
     }
 
     void recordFrameCommands(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex) override {
-        std::array<vk::ClearValue, 2> clearValues{};
-        clearValues[0].color.setFloat32(std::array<float, 4>{0.02f, 0.02f, 0.08f, 1.0f});
-        clearValues[1].depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
-
-        vk::RenderPassBeginInfo renderPassInfo{
-            .renderPass = *renderPass,
-            .framebuffer = *framebuffers[imageIndex],
-            .renderArea = {.offset = {0, 0}, .extent = swapchainExtent()},
-            .clearValueCount = static_cast<std::uint32_t>(clearValues.size()),
-            .pClearValues = clearValues.data(),
-        };
-
         updateCameraFromInput();
 
         const auto extent = swapchainExtent();
@@ -225,7 +203,7 @@ private:
 
         const vk::Buffer rawVertexBuffer = *vertexBuffer.buffer;
         constexpr vk::DeviceSize vertexOffset = 0;
-        commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+        beginSwapchainRenderPass(commandBuffer, imageIndex);
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
         commandBuffer.bindVertexBuffers(0, {rawVertexBuffer}, {vertexOffset});
         commandBuffer.bindIndexBuffer(*indexBuffer.buffer, 0, vk::IndexType::eUint32);
@@ -305,119 +283,6 @@ private:
 
         indexBuffer = createBuffer(mesh.indices.size() * sizeof(std::uint32_t), vk::BufferUsageFlagBits::eIndexBuffer);
         uploadBuffer(indexBuffer, mesh.indices.data(), mesh.indices.size() * sizeof(std::uint32_t));
-    }
-
-    void createRenderTargets() {
-        const auto extent = swapchainExtent();
-        const auto surfaceFormat = swapchainSurfaceFormat();
-        for (const auto image : swapchainImages()) {
-            imageViews.push_back(device().createImageView({
-                .image = image,
-                .viewType = vk::ImageViewType::e2D,
-                .format = surfaceFormat.format,
-                .subresourceRange =
-                    {
-                        .aspectMask = vk::ImageAspectFlagBits::eColor,
-                        .baseMipLevel = 0,
-                        .levelCount = 1,
-                        .baseArrayLayer = 0,
-                        .layerCount = 1,
-                    },
-            }));
-
-            depthImages.push_back(device().createImage({
-                .imageType = vk::ImageType::e2D,
-                .format = vk::Format::eD32Sfloat,
-                .extent = {extent.width, extent.height, 1},
-                .mipLevels = 1,
-                .arrayLayers = 1,
-                .samples = vk::SampleCountFlagBits::e1,
-                .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment,
-            }));
-            const auto memoryRequirements = depthImages.back().getMemoryRequirements();
-            depthImageMemories.emplace_back(
-                device(),
-                vk::MemoryAllocateInfo{
-                    .allocationSize = memoryRequirements.size,
-                    .memoryTypeIndex = findMemoryTypeIndex(memoryRequirements,
-                                                           vk::MemoryPropertyFlagBits::eDeviceLocal),
-                });
-            depthImages.back().bindMemory(*depthImageMemories.back(), 0);
-
-            depthImageViews.push_back(device().createImageView({
-                .image = *depthImages.back(),
-                .viewType = vk::ImageViewType::e2D,
-                .format = vk::Format::eD32Sfloat,
-                .subresourceRange =
-                    {
-                        .aspectMask = vk::ImageAspectFlagBits::eDepth,
-                        .baseMipLevel = 0,
-                        .levelCount = 1,
-                        .baseArrayLayer = 0,
-                        .layerCount = 1,
-                    },
-            }));
-        }
-    }
-
-    void createRenderPass() {
-        const auto surfaceFormat = swapchainSurfaceFormat();
-        std::array<vk::AttachmentDescription, 2> attachments = {
-            vk::AttachmentDescription{
-                .format = surfaceFormat.format,
-                .samples = vk::SampleCountFlagBits::e1,
-                .loadOp = vk::AttachmentLoadOp::eClear,
-                .storeOp = vk::AttachmentStoreOp::eStore,
-                .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
-                .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
-                .initialLayout = vk::ImageLayout::eUndefined,
-                .finalLayout = vk::ImageLayout::ePresentSrcKHR,
-            },
-            vk::AttachmentDescription{
-                .format = vk::Format::eD32Sfloat,
-                .samples = vk::SampleCountFlagBits::e1,
-                .loadOp = vk::AttachmentLoadOp::eClear,
-                .storeOp = vk::AttachmentStoreOp::eDontCare,
-                .stencilLoadOp = vk::AttachmentLoadOp::eDontCare,
-                .stencilStoreOp = vk::AttachmentStoreOp::eDontCare,
-                .initialLayout = vk::ImageLayout::eUndefined,
-                .finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-            },
-        };
-
-        const vk::AttachmentReference colorReference{
-            .attachment = 0,
-            .layout = vk::ImageLayout::eColorAttachmentOptimal,
-        };
-        const vk::AttachmentReference depthReference{
-            .attachment = 1,
-            .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-        };
-        const vk::SubpassDescription subpass{
-            .pipelineBindPoint = vk::PipelineBindPoint::eGraphics,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &colorReference,
-            .pDepthStencilAttachment = &depthReference,
-        };
-        const vk::SubpassDependency dependency{
-            .srcSubpass = std::numeric_limits<std::uint32_t>::max(),
-            .dstSubpass = 0,
-            .srcStageMask =
-                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
-            .dstStageMask =
-                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
-            .srcAccessMask = {},
-            .dstAccessMask =
-                vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-        };
-        renderPass = device().createRenderPass({
-            .attachmentCount = static_cast<std::uint32_t>(attachments.size()),
-            .pAttachments = attachments.data(),
-            .subpassCount = 1,
-            .pSubpasses = &subpass,
-            .dependencyCount = 1,
-            .pDependencies = &dependency,
-        });
     }
 
     void createGraphicsPipeline() {
@@ -530,24 +395,9 @@ private:
                                                                       .pDepthStencilState = &depthStencil,
                                                                       .pColorBlendState = &colorBlending,
                                                                       .layout = *pipelineLayout,
-                                                                      .renderPass = *renderPass,
-                                                                      .subpass = 0,
-                                                                  });
-    }
-
-    void createFramebuffers() {
-        const auto extent = swapchainExtent();
-        for (std::size_t index = 0; index < swapchainImages().size(); ++index) {
-            std::array<vk::ImageView, 2> attachments = {*imageViews[index], *depthImageViews[index]};
-            framebuffers.push_back(device().createFramebuffer({
-                .renderPass = *renderPass,
-                .attachmentCount = static_cast<std::uint32_t>(attachments.size()),
-                .pAttachments = attachments.data(),
-                .width = extent.width,
-                .height = extent.height,
-                .layers = 1,
-            }));
-        }
+                                                                       .renderPass = swapchainRenderPass(),
+                                                                       .subpass = 0,
+                                                                   });
     }
 };
 
