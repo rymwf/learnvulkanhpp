@@ -6,6 +6,7 @@ target_sources(common PUBLIC
         debug.ixx
         io.ixx
         window.ixx
+        windowed_app.ixx
         vulkan_instance.ixx
 )
 
