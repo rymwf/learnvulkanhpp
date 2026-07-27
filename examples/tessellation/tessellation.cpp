@@ -46,6 +46,15 @@ private:
         createGraphicsPipeline();
     }
 
+    void releaseSwapchainDependentResources() override {
+        graphicsPipeline = nullptr;
+        pipelineLayout = nullptr;
+    }
+
+    void recreateSwapchainDependentResources() override {
+        createGraphicsPipeline();
+    }
+
     void recordFrameCommands(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex) override {
         const auto extent = swapchainExtent();
         TessellationPushConstants pushConstants{

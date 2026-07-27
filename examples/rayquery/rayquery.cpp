@@ -93,6 +93,15 @@ private:
         createGraphicsPipeline();
     }
 
+    void releaseSwapchainDependentResources() override {
+        graphicsPipeline = nullptr;
+        pipelineLayout = nullptr;
+    }
+
+    void recreateSwapchainDependentResources() override {
+        createGraphicsPipeline();
+    }
+
     DeviceFeatureChain enabledDeviceFeatureChain() const override {
         return DeviceFeatureChain::make(
             vk::PhysicalDeviceFeatures{},
@@ -413,6 +422,8 @@ private:
     }
 
     void createGraphicsPipeline() {
+        shaderModules.clear();
+        shaderModules.reserve(2);
         const std::filesystem::path shaderDirectory{SHADER_SPV_DIR};
         const auto vertexSpirv = readSpirvFile(shaderDirectory / "rayquery.vert.spv");
         const auto fragmentSpirv = readSpirvFile(shaderDirectory / "rayquery.frag.spv");

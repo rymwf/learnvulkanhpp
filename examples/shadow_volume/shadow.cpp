@@ -221,6 +221,21 @@ private:
         createPipelines();
     }
 
+    void releaseSwapchainDependentResources() override {
+        previewPipeline = nullptr;
+        volumePipeline = nullptr;
+        scenePipeline = nullptr;
+        previewPipelineLayout = nullptr;
+        volumePipelineLayout = nullptr;
+        scenePipelineLayout = nullptr;
+    }
+
+    void recreateSwapchainDependentResources() override {
+        createScenePipeline();
+        createVolumePipeline();
+        createPreviewPipeline();
+    }
+
     void recordFrameCommands(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex) override {
         updateInput();
 
@@ -886,18 +901,24 @@ private:
         const auto extent = swapchainExtent();
         constexpr std::uint32_t previewSize = 256;
         constexpr std::uint32_t previewMargin = 16;
-        const auto previewX = extent.width - previewSize - previewMargin;
+        const vk::Extent2D previewExtent{
+            .width = std::min(previewSize, extent.width),
+            .height = std::min(previewSize, extent.height),
+        };
+        const auto availableX = extent.width - previewExtent.width;
+        const auto previewX = availableX > previewMargin ? availableX - previewMargin : availableX;
+        const auto previewY = std::min(previewMargin, extent.height - previewExtent.height);
         const vk::Viewport viewport{
-            .x = 0.0f,
-            .y = static_cast<float>(extent.height),
-            .width = static_cast<float>(extent.width),
-            .height = -static_cast<float>(extent.height),
+            .x = static_cast<float>(previewX),
+            .y = static_cast<float>(previewY + previewExtent.height),
+            .width = static_cast<float>(previewExtent.width),
+            .height = -static_cast<float>(previewExtent.height),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
         };
         const vk::Rect2D scissor{
-            .offset = {static_cast<std::int32_t>(previewX), static_cast<std::int32_t>(previewMargin)},
-            .extent = {previewSize, previewSize},
+            .offset = {static_cast<std::int32_t>(previewX), static_cast<std::int32_t>(previewY)},
+            .extent = previewExtent,
         };
         const vk::PipelineViewportStateCreateInfo viewportState{
             .viewportCount = 1,

@@ -28,6 +28,15 @@ private:
         createGraphicsPipeline();
     }
 
+    void releaseSwapchainDependentResources() override {
+        graphicsPipeline = nullptr;
+        pipelineLayout = nullptr;
+    }
+
+    void recreateSwapchainDependentResources() override {
+        createGraphicsPipeline();
+    }
+
     void recordFrameCommands(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex) override {
         beginSwapchainRenderPass(commandBuffer, imageIndex);
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);

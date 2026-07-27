@@ -98,6 +98,17 @@ private:
         createShaderBindingTable();
     }
 
+    void releaseSwapchainDependentResources() override {
+        outputImage.view = nullptr;
+        outputImage.image = nullptr;
+        outputImage.memory = nullptr;
+    }
+
+    void recreateSwapchainDependentResources() override {
+        createOutputImage();
+        updateOutputImageDescriptor();
+    }
+
     bool supportsAdditionalDeviceRequirements(const vk::raii::PhysicalDevice &candidate) const override {
         // These checks ensure the base can create the transfer-destination swapchain used by the blit path.
         const auto capabilities = candidate.getSurfaceCapabilitiesKHR(*surface());
@@ -494,6 +505,21 @@ private:
             },
         };
         device().updateDescriptorSets(writes, {});
+    }
+
+    void updateOutputImageDescriptor() {
+        vk::DescriptorImageInfo imageInfo{
+            .imageView = *outputImage.view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+        const vk::WriteDescriptorSet write{
+            .dstSet = *descriptorSets.front(),
+            .dstBinding = 1,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eStorageImage,
+            .pImageInfo = &imageInfo,
+        };
+        device().updateDescriptorSets({write}, {});
     }
 
     void createRayTracingPipeline() {

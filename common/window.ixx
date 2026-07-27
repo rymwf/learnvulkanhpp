@@ -12,7 +12,7 @@ export struct GlfwWindowConfig {
     int width = 1024;
     int height = 768;
     std::string title;
-    bool resizable = false;
+    bool resizable = true;
 };
 
 export struct GlfwCursorPosition {
@@ -56,6 +56,7 @@ public:
         }
 
         glfwSetWindowUserPointer(window_, this);
+        glfwSetFramebufferSizeCallback(window_, framebufferSizeCallback);
         glfwSetScrollCallback(window_, scrollCallback);
     }
 
@@ -133,11 +134,26 @@ public:
         return std::exchange(scrollYOffset_, 0.0);
     }
 
+    [[nodiscard]] bool consumeFramebufferResize() noexcept {
+        return std::exchange(framebufferResized_, false);
+    }
+
     void pollEvents() const {
         glfwPollEvents();
     }
 
+    void waitEvents() const {
+        glfwWaitEvents();
+    }
+
 private:
+    static void framebufferSizeCallback(GLFWwindow *window, int, int) {
+        auto *self = static_cast<GlfwWindow *>(glfwGetWindowUserPointer(window));
+        if (self != nullptr) {
+            self->framebufferResized_ = true;
+        }
+    }
+
     static void scrollCallback(GLFWwindow *window, double, double yOffset) {
         auto *self = static_cast<GlfwWindow *>(glfwGetWindowUserPointer(window));
         if (self != nullptr) {
@@ -147,5 +163,6 @@ private:
 
     GLFWwindow *window_ = nullptr;
     bool initialized_ = false;
+    bool framebufferResized_ = false;
     double scrollYOffset_ = 0.0;
 };

@@ -332,6 +332,8 @@ protected:
     }
 
     virtual void createApplicationResources() = 0;
+    virtual void releaseSwapchainDependentResources() {}
+    virtual void recreateSwapchainDependentResources() {}
     virtual void recordFrameCommands(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex) = 0;
 
     [[nodiscard]] const vk::raii::PhysicalDevice &physicalDevice() const noexcept {
@@ -635,7 +637,7 @@ private:
         }
     }
 
-    void createSwapchain() {
+    void createSwapchain(vk::SwapchainKHR oldSwapchain = {}) {
         const auto capabilities = physicalDevice_.getSurfaceCapabilitiesKHR(*surface_);
         const auto formats = physicalDevice_.getSurfaceFormatsKHR(*surface_);
         const auto presentModes = physicalDevice_.getSurfacePresentModesKHR(*surface_);
@@ -671,6 +673,7 @@ private:
             .compositeAlpha = chooseCompositeAlpha(capabilities.supportedCompositeAlpha),
             .presentMode = presentMode,
             .clipped = true,
+            .oldSwapchain = oldSwapchain,
         };
         swapchain_ = device_.createSwapchainKHR(createInfo);
         swapchainImages_ = swapchain_.getImages();
@@ -692,12 +695,17 @@ private:
     void createSyncObjects() {
         imageAvailableSemaphores_.reserve(config_.framesInFlight);
         inFlightFences_.reserve(config_.framesInFlight);
-        renderFinishedSemaphores_.reserve(swapchainImages_.size());
 
         for (std::uint32_t index = 0; index < config_.framesInFlight; ++index) {
             imageAvailableSemaphores_.push_back(device_.createSemaphore({}));
             inFlightFences_.push_back(device_.createFence({.flags = vk::FenceCreateFlagBits::eSignaled}));
         }
+        createRenderFinishedSemaphores();
+    }
+
+    void createRenderFinishedSemaphores() {
+        renderFinishedSemaphores_.clear();
+        renderFinishedSemaphores_.reserve(swapchainImages_.size());
         for (std::size_t index = 0; index < swapchainImages_.size(); ++index) {
             renderFinishedSemaphores_.push_back(device_.createSemaphore({}));
         }
@@ -707,20 +715,60 @@ private:
         return error.code().value() == static_cast<int>(vk::Result::eErrorOutOfDateKHR);
     }
 
+    [[nodiscard]] bool waitForUsableFramebuffer() {
+        auto extent = window_.framebufferExtent();
+        while (extent.width == 0 || extent.height == 0) {
+            if (window_.shouldClose()) {
+                return false;
+            }
+            window_.waitEvents();
+            extent = window_.framebufferExtent();
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool recreateSwapchain() {
+        if (!waitForUsableFramebuffer()) {
+            return false;
+        }
+
+        device_.waitIdle();
+        releaseSwapchainDependentResources();
+        swapchainRenderPassResources_.reset();
+        renderFinishedSemaphores_.clear();
+        swapchainImages_.clear();
+
+        auto oldSwapchain = std::move(swapchain_);
+        createSwapchain(*oldSwapchain);
+        swapchainRenderPassResources_ = createSwapchainRenderPassResources();
+        validateSwapchainRenderPassResources();
+        recreateSwapchainDependentResources();
+        createRenderFinishedSemaphores();
+        (void)window_.consumeFramebufferResize();
+        return true;
+    }
+
     void drawFrame() {
+        if (window_.consumeFramebufferResize()) {
+            (void)recreateSwapchain();
+            return;
+        }
+
         const auto frameIndex = currentFrame_;
         (void)device_.waitForFences({*inFlightFences_[frameIndex]}, true,
                                     std::numeric_limits<std::uint64_t>::max());
 
         std::uint32_t imageIndex = 0;
+        bool shouldRecreateSwapchain = false;
         try {
             const auto [result, acquiredImageIndex] = swapchain_.acquireNextImage(
                 std::numeric_limits<std::uint64_t>::max(), *imageAvailableSemaphores_[frameIndex], vk::Fence{});
-            (void)result;
+            shouldRecreateSwapchain = result == vk::Result::eSuboptimalKHR;
             imageIndex = acquiredImageIndex;
         } catch (const vk::SystemError &error) {
             if (isSwapchainOutOfDate(error)) {
-                throw std::runtime_error("Swapchain became out of date; this fixed-size example does not recreate it");
+                (void)recreateSwapchain();
+                return;
             }
             throw;
         }
@@ -755,15 +803,20 @@ private:
             .pImageIndices = &imageIndex,
         };
         try {
-            (void)graphicsQueue_.presentKHR(presentInfo);
+            shouldRecreateSwapchain = graphicsQueue_.presentKHR(presentInfo) == vk::Result::eSuboptimalKHR ||
+                                      shouldRecreateSwapchain;
         } catch (const vk::SystemError &error) {
             if (isSwapchainOutOfDate(error)) {
-                throw std::runtime_error("Swapchain became out of date; this fixed-size example does not recreate it");
+                (void)recreateSwapchain();
+                return;
             }
             throw;
         }
 
         currentFrame_ = (currentFrame_ + 1) % config_.framesInFlight;
+        if (shouldRecreateSwapchain) {
+            (void)recreateSwapchain();
+        }
     }
 
     void mainLoop() {
