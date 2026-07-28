@@ -1,10 +1,12 @@
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/glm.hpp>
+#include <imgui.h>
 
 import vulkan;
 import std;
 import common;
+import common.imgui_overlay;
 
 #ifndef SHADER_SPV_DIR
 #error "SHADER_SPV_DIR must be set by CMake (see examples/shadow_filtering/CMakeLists.txt)"
@@ -62,9 +64,23 @@ enum class FilteringMode : std::uint32_t {
 
 struct FilteringSettings {
     std::array<float, 4> controls{};
+    std::array<float, 4> pcssSearch{};
+    std::array<float, 4> pcssPenumbra{};
 };
 
-static_assert(sizeof(FilteringSettings) == 4 * sizeof(float));
+static_assert(sizeof(FilteringSettings) == 12 * sizeof(float));
+
+struct FilteringParameters {
+    FilteringMode mode = FilteringMode::Hard;
+    float depthBias = 0.0015f;
+    int pcfKernelRadius = 1;
+    int pcssBlockerKernelRadius = 2;
+    float pcssSearchRadius = 18.0f;
+    float pcssLightSize = 42.0f;
+    int pcssFilterKernelRadius = 2;
+    float pcssMinPenumbra = 2.0f;
+    float pcssMaxPenumbra = 28.0f;
+};
 
 constexpr Vertex makeVertex(float px,
                             float py,
@@ -196,8 +212,9 @@ private:
     OrbitCamera camera;
     std::optional<GlfwCursorPosition> previousDragCursor;
     bool resetKeyWasPressed = false;
-    FilteringMode filteringMode = FilteringMode::Hard;
+    FilteringParameters filteringParameters;
     vk::ImageLayout shadowMapLayout = vk::ImageLayout::eUndefined;
+    ImGuiVulkanOverlay overlay;
 
     void createApplicationResources() override {
         createGeometryBuffers();
@@ -206,9 +223,11 @@ private:
         createShadowRenderPass();
         createShadowDescriptors();
         createPipelines();
+        overlay.initialize(makeOverlayConfig());
     }
 
     void releaseSwapchainDependentResources() override {
+        overlay.releaseRenderer();
         previewPipeline = nullptr;
         scenePipeline = nullptr;
         previewPipelineLayout = nullptr;
@@ -218,9 +237,14 @@ private:
     void recreateSwapchainDependentResources() override {
         createScenePipeline();
         createPreviewPipeline();
+        const auto minimumImageCount = imguiMinImageCount();
+        overlay.recreateRenderer(swapchainRenderPass(), minimumImageCount,
+                                 static_cast<std::uint32_t>(swapchainImages().size()));
     }
 
     void recordFrameCommands(vk::raii::CommandBuffer &commandBuffer, std::uint32_t imageIndex) override {
+        overlay.beginFrame();
+        drawControlPanel();
         updateInput();
 
         const auto extent = swapchainExtent();
@@ -259,16 +283,18 @@ private:
         commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *previewPipelineLayout, 0,
                                          descriptorSetHandles, {});
         commandBuffer.draw(4, 1, 0, 0);
+        overlay.render(commandBuffer);
         commandBuffer.endRenderPass();
     }
 
     void updateInput() {
         auto &inputWindow = window();
+        const auto captureMouse = overlay.wantsMouseCapture();
         const auto cursor = inputWindow.cursorPosition();
         const auto panning = inputWindow.isPressed(GlfwMouseButton::Middle);
         const auto orbiting = inputWindow.isPressed(GlfwMouseButton::Left);
 
-        if (panning || orbiting) {
+        if (!captureMouse && (panning || orbiting)) {
             if (previousDragCursor) {
                 const auto horizontalPixels = static_cast<float>(cursor.x - previousDragCursor->x);
                 const auto verticalPixels = static_cast<float>(cursor.y - previousDragCursor->y);
@@ -286,30 +312,105 @@ private:
             previousDragCursor.reset();
         }
 
-        camera.zoom(static_cast<float>(inputWindow.consumeScrollYOffset()));
-
-        auto requestedMode = filteringMode;
-        if (inputWindow.isPressed(GlfwKey::One)) {
-            requestedMode = FilteringMode::Hard;
-        } else if (inputWindow.isPressed(GlfwKey::Two)) {
-            requestedMode = FilteringMode::Pcf;
-        } else if (inputWindow.isPressed(GlfwKey::Three)) {
-            requestedMode = FilteringMode::Pcss;
+        const auto scrollOffset = inputWindow.consumeScrollYOffset();
+        if (!captureMouse) {
+            camera.zoom(static_cast<float>(scrollOffset));
         }
-        if (requestedMode != filteringMode) {
-            filteringMode = requestedMode;
-            constexpr std::array modeNames = {"Hard", "PCF", "PCSS"};
-            std::println("Shadow filter: {}", modeNames[static_cast<std::size_t>(filteringMode)]);
-        }
-        updateFilteringSettings();
 
         const auto resetPressed = inputWindow.isPressed(GlfwKey::R);
-        if (resetPressed && !resetKeyWasPressed) {
+        if (!overlay.wantsKeyboardCapture() && resetPressed && !resetKeyWasPressed) {
             camera.reset();
             previousDragCursor.reset();
         }
         resetKeyWasPressed = resetPressed;
+    }
 
+    void drawControlPanel() {
+        const auto *viewport = ImGui::GetMainViewport();
+        constexpr float margin = 12.0f;
+        const auto panelWidth = std::max(1.0f, std::min(320.0f, viewport->WorkSize.x - 2.0f * margin));
+        const auto panelHeight = std::max(1.0f, std::min(500.0f, viewport->WorkSize.y - 2.0f * margin));
+        ImGui::SetNextWindowPos({viewport->WorkPos.x + margin, viewport->WorkPos.y + margin}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({panelWidth, panelHeight}, ImGuiCond_Always);
+
+        constexpr ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
+        if (ImGui::Begin("Shadow Filtering", nullptr, windowFlags)) {
+            auto mode = static_cast<int>(filteringParameters.mode);
+            ImGui::TextUnformatted("Mode");
+            ImGui::RadioButton("Hard", &mode, static_cast<int>(FilteringMode::Hard));
+            ImGui::SameLine();
+            ImGui::RadioButton("PCF", &mode, static_cast<int>(FilteringMode::Pcf));
+            ImGui::SameLine();
+            ImGui::RadioButton("PCSS", &mode, static_cast<int>(FilteringMode::Pcss));
+            filteringParameters.mode = static_cast<FilteringMode>(mode);
+
+            ImGui::SeparatorText("General");
+            sliderFloat("Depth Bias", "##depth_bias", filteringParameters.depthBias, 0.0f, 0.01f, "%.4f");
+
+            ImGui::SeparatorText("PCF");
+            sliderInt("Kernel Radius", "##pcf_kernel_radius", filteringParameters.pcfKernelRadius, 0, 4);
+
+            ImGui::SeparatorText("PCSS");
+            sliderInt("Blocker Kernel Radius", "##pcss_blocker_kernel_radius",
+                      filteringParameters.pcssBlockerKernelRadius, 1, 4);
+            sliderFloat("Search Radius", "##pcss_search_radius", filteringParameters.pcssSearchRadius, 1.0f,
+                        64.0f, "%.0f texels");
+            sliderFloat("Light Size", "##pcss_light_size", filteringParameters.pcssLightSize, 1.0f, 128.0f,
+                        "%.0f texels");
+            sliderInt("Filter Kernel Radius", "##pcss_filter_kernel_radius",
+                      filteringParameters.pcssFilterKernelRadius, 1, 4);
+            sliderFloat("Min Penumbra", "##pcss_min_penumbra", filteringParameters.pcssMinPenumbra, 0.0f,
+                        64.0f, "%.0f texels");
+            filteringParameters.pcssMaxPenumbra =
+                std::max(filteringParameters.pcssMaxPenumbra, filteringParameters.pcssMinPenumbra);
+            sliderFloat("Max Penumbra", "##pcss_max_penumbra", filteringParameters.pcssMaxPenumbra,
+                        filteringParameters.pcssMinPenumbra, 128.0f, "%.0f texels");
+
+            ImGui::Spacing();
+            if (ImGui::Button("Reset", {-1.0f, 0.0f})) {
+                filteringParameters = {};
+            }
+        }
+        ImGui::End();
+        updateFilteringSettings();
+    }
+
+    static void sliderFloat(const char *label,
+                            const char *id,
+                            float &value,
+                            float minimum,
+                            float maximum,
+                            const char *format) {
+        ImGui::TextUnformatted(label);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat(id, &value, minimum, maximum, format, ImGuiSliderFlags_AlwaysClamp);
+    }
+
+    static void sliderInt(const char *label, const char *id, int &value, int minimum, int maximum) {
+        ImGui::TextUnformatted(label);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderInt(id, &value, minimum, maximum, "%d", ImGuiSliderFlags_AlwaysClamp);
+    }
+
+    [[nodiscard]] std::uint32_t imguiMinImageCount() const {
+        const auto capabilities = physicalDevice().getSurfaceCapabilitiesKHR(*surface());
+        return std::max(2u, capabilities.minImageCount);
+    }
+
+    [[nodiscard]] ImGuiVulkanOverlayConfig makeOverlayConfig() {
+        return {
+            .window = &window(),
+            .apiVersion = apiVersion(),
+            .instance = *instance(),
+            .physicalDevice = *physicalDevice(),
+            .device = *device(),
+            .queueFamilyIndex = graphicsQueueFamilyIndex(),
+            .queue = *graphicsQueue(),
+            .renderPass = swapchainRenderPass(),
+            .minImageCount = imguiMinImageCount(),
+            .imageCount = static_cast<std::uint32_t>(swapchainImages().size()),
+        };
     }
 
     BufferResource createHostVisibleBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage) {
@@ -356,7 +457,24 @@ private:
 
     void updateFilteringSettings() {
         const FilteringSettings settings{
-            .controls = {static_cast<float>(static_cast<std::uint32_t>(filteringMode)), 0.0f, 0.0f, 0.0f},
+            .controls = {
+                static_cast<float>(static_cast<std::uint32_t>(filteringParameters.mode)),
+                filteringParameters.depthBias,
+                static_cast<float>(filteringParameters.pcfKernelRadius),
+                0.0f,
+            },
+            .pcssSearch = {
+                static_cast<float>(filteringParameters.pcssBlockerKernelRadius),
+                filteringParameters.pcssSearchRadius,
+                filteringParameters.pcssLightSize,
+                static_cast<float>(filteringParameters.pcssFilterKernelRadius),
+            },
+            .pcssPenumbra = {
+                filteringParameters.pcssMinPenumbra,
+                filteringParameters.pcssMaxPenumbra,
+                0.0f,
+                0.0f,
+            },
         };
         uploadBuffer(filteringSettingsBuffer, &settings, sizeof(settings));
     }

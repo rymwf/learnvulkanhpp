@@ -340,6 +340,14 @@ protected:
         return physicalDevice_;
     }
 
+    [[nodiscard]] const vk::raii::Instance &instance() const noexcept {
+        return vulkan_.instance();
+    }
+
+    [[nodiscard]] std::uint32_t apiVersion() const noexcept {
+        return config_.apiVersion;
+    }
+
     [[nodiscard]] const vk::raii::Device &device() const noexcept {
         return device_;
     }

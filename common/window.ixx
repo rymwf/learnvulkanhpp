@@ -116,6 +116,10 @@ public:
         return glfwWindowShouldClose(window_) == GLFW_TRUE;
     }
 
+    [[nodiscard]] GLFWwindow *nativeHandle() const noexcept {
+        return window_;
+    }
+
     [[nodiscard]] GlfwCursorPosition cursorPosition() const {
         GlfwCursorPosition position;
         glfwGetCursorPos(window_, &position.x, &position.y);

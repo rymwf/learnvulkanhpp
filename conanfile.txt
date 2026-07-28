@@ -3,6 +3,7 @@ glm/1.0.3
 glfw/3.4
 spirv-reflect/1.4.313.0
 tinyobjloader/2.0.0-rc10
+imgui/1.92.8
 
 [generators]
 CMakeDeps

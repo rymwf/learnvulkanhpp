@@ -7,6 +7,7 @@ add_executable(${dirname} ${srcs})
 target_link_libraries(${dirname} PRIVATE
     Vulkan::cppm
     common
+    common_imgui
     glm::glm
 )
 

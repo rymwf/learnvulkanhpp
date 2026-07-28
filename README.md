@@ -27,7 +27,7 @@
 - `tessellation`：使用 Tessellation Control/Evaluation Shader 将 quad patch 细分为动态起伏的线框曲面；需要 GPU 支持 `tessellationShader` 和 `fillModeNonSolid` Feature。
 - `model`：使用 TinyObjLoader 载入 `assets/models/bunny.obj`，为没有法线的网格生成平滑法线，并通过顶点/索引缓冲进行光照渲染。左键拖动旋转，中键拖动平移，滚轮缩放，`R` 重置视角。
 - `shadow`：使用方向光 2D Shadow Map 进行两遍光栅化，内置平面和立方体展示硬阴影，并始终在右上角显示深度图预览。左键拖动旋转，中键拖动平移，滚轮缩放，`R` 重置视角。
-- `shadow_filtering`：在同一场景中比较 Hard Shadow、PCF 和 PCSS。按 `1`、`2`、`3` 切换过滤模式，右上角始终显示原始深度图；相机控制与 `shadow` 相同。
+- `shadow_filtering`：在同一场景中比较 Hard Shadow、PCF 和 PCSS。通过左上角 ImGui 面板切换模式并调整 Depth Bias、PCF Kernel 和 PCSS 搜索/半影参数，右上角始终显示原始深度图；相机控制与 `shadow` 相同。
 - `shadow_csm`：使用三层深度纹理数组实现 Cascaded Shadow Maps；内置约 200 单位的户外地面与近、中、远多组遮挡物，使用 `20/70/200` 分割距离。主场景以轻微色调标出当前 cascade，右上角并排显示三个 cascade 的深度图。
 - `shadow_vsm`：使用 Variance Shadow Maps 输出深度一阶/二阶矩，并执行全屏模糊 pass；右上角左侧为原始矩图，右侧为模糊后的矩图。
 - `shadow_volume`：在基础 Shadow Map 上增加半透明体积区域，对光线方向上的采样点积分并按阴影衰减散射；右上角保留深度图预览。

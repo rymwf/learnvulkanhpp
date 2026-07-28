@@ -15,6 +15,7 @@ set(CMAKE_CXX_MODULE_STD on)
 find_package(Vulkan REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 find_package(spirv-reflect-static CONFIG REQUIRED)
 find_package(tinyobjloader CONFIG REQUIRED)
 
