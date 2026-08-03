@@ -98,6 +98,7 @@ export struct WindowedVulkanAppConfig {
     GlfwWindowConfig window;
     std::uint32_t apiVersion = vk::ApiVersion11;
     std::vector<std::string> requiredDeviceExtensions = {"VK_KHR_swapchain"};
+    vk::QueueFlags requiredQueueFlags = vk::QueueFlagBits::eGraphics;
     std::uint32_t framesInFlight = 2;
     vk::ImageUsageFlags swapchainImageUsage = vk::ImageUsageFlagBits::eColorAttachment;
     vk::PipelineStageFlags submitWaitStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
@@ -368,6 +369,14 @@ protected:
         return graphicsQueueFamilyIndex_;
     }
 
+    [[nodiscard]] std::uint32_t currentFrameIndex() const noexcept {
+        return currentFrame_;
+    }
+
+    [[nodiscard]] std::uint32_t framesInFlight() const noexcept {
+        return config_.framesInFlight;
+    }
+
     [[nodiscard]] GlfwWindow &window() noexcept {
         return window_;
     }
@@ -443,6 +452,9 @@ protected:
 
 private:
     static WindowedVulkanAppConfig validateConfig(WindowedVulkanAppConfig config) {
+        if (!(config.requiredQueueFlags & vk::QueueFlagBits::eGraphics)) {
+            throw std::runtime_error("requiredQueueFlags must include eGraphics");
+        }
         if (config.framesInFlight == 0) {
             throw std::runtime_error("framesInFlight must be greater than zero");
         }
@@ -473,10 +485,10 @@ private:
     }
 
     [[nodiscard]] std::optional<std::uint32_t>
-    findGraphicsPresentQueue(const vk::raii::PhysicalDevice &candidate) const {
+    findRequiredPresentQueue(const vk::raii::PhysicalDevice &candidate) const {
         const auto queueFamilies = candidate.getQueueFamilyProperties();
         for (std::uint32_t index = 0; index < queueFamilies.size(); ++index) {
-            if ((queueFamilies[index].queueFlags & vk::QueueFlagBits::eGraphics) &&
+            if ((queueFamilies[index].queueFlags & config_.requiredQueueFlags) == config_.requiredQueueFlags &&
                 candidate.getSurfaceSupportKHR(index, *surface_)) {
                 return index;
             }
@@ -516,7 +528,7 @@ private:
                 !featureChain.isSupportedBy(candidate) || !supportsAdditionalDeviceRequirements(candidate)) {
                 continue;
             }
-            const auto queueFamily = findGraphicsPresentQueue(candidate);
+            const auto queueFamily = findRequiredPresentQueue(candidate);
             if (!queueFamily) {
                 continue;
             }
@@ -529,7 +541,7 @@ private:
 
         throw std::runtime_error(std::format(
             "No suitable GPU found for {} (Vulkan API version, required device extensions, features, and "
-            "graphics/present support)",
+            "queue/present support)",
             config_.window.title));
     }
 

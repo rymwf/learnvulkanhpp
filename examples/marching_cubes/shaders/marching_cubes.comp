@@ -1,0 +1,107 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "marching_cubes_table.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, r32f) uniform readonly image3D volumeImage;
+
+struct Vertex {
+    vec4 position;
+    vec4 normal;
+};
+
+layout(std430, set = 0, binding = 1) buffer GeneratedVertices {
+    Vertex vertices[];
+};
+
+layout(std430, set = 0, binding = 2) buffer IndirectCommand {
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
+} indirectCommand;
+
+layout(push_constant) uniform ComputePushConstants {
+    float time;
+    float isoLevel;
+    uint resolution;
+    float padding;
+} pushConstants;
+
+const ivec3 cornerOffsets[8] = ivec3[](
+    ivec3(0, 0, 0), ivec3(1, 0, 0), ivec3(1, 1, 0), ivec3(0, 1, 0),
+    ivec3(0, 0, 1), ivec3(1, 0, 1), ivec3(1, 1, 1), ivec3(0, 1, 1));
+
+const ivec2 edgeCorners[12] = ivec2[](
+    ivec2(0, 1), ivec2(1, 2), ivec2(2, 3), ivec2(3, 0),
+    ivec2(4, 5), ivec2(5, 6), ivec2(6, 7), ivec2(7, 4),
+    ivec2(0, 4), ivec2(1, 5), ivec2(2, 6), ivec2(3, 7));
+
+float densityAt(ivec3 coordinate) {
+    return imageLoad(volumeImage, clamp(coordinate, ivec3(0), ivec3(pushConstants.resolution))).r;
+}
+
+vec3 gradientAt(ivec3 coordinate) {
+    return vec3(
+        densityAt(coordinate + ivec3(1, 0, 0)) - densityAt(coordinate - ivec3(1, 0, 0)),
+        densityAt(coordinate + ivec3(0, 1, 0)) - densityAt(coordinate - ivec3(0, 1, 0)),
+        densityAt(coordinate + ivec3(0, 0, 1)) - densityAt(coordinate - ivec3(0, 0, 1)));
+}
+
+vec3 worldPosition(vec3 sampleCoordinate) {
+    return mix(vec3(-1.5), vec3(1.5), sampleCoordinate / float(pushConstants.resolution));
+}
+
+Vertex vertexOnEdge(ivec3 cell, int edge, float cornerDensity[8]) {
+    const ivec2 corners = edgeCorners[edge];
+    const int corner0 = corners.x;
+    const int corner1 = corners.y;
+    const float value0 = cornerDensity[corner0];
+    const float value1 = cornerDensity[corner1];
+    const float denominator = value1 - value0;
+    const float interpolation = abs(denominator) > 1e-6
+        ? clamp((pushConstants.isoLevel - value0) / denominator, 0.0, 1.0)
+        : 0.5;
+
+    const ivec3 sample0 = cell + cornerOffsets[corner0];
+    const ivec3 sample1 = cell + cornerOffsets[corner1];
+    const vec3 samplePosition = mix(vec3(sample0), vec3(sample1), interpolation);
+    const vec3 gradient = mix(gradientAt(sample0), gradientAt(sample1), interpolation);
+    const float gradientLength = length(gradient);
+    const vec3 normal = gradientLength > 1e-5 ? -gradient / gradientLength : vec3(0.0, 1.0, 0.0);
+    return Vertex(vec4(worldPosition(samplePosition), 1.0), vec4(normal, 0.0));
+}
+
+void main() {
+    const uvec3 cellCoordinate = gl_GlobalInvocationID.xyz;
+    if (any(greaterThanEqual(cellCoordinate, uvec3(pushConstants.resolution)))) {
+        return;
+    }
+
+    const ivec3 cell = ivec3(cellCoordinate);
+    float cornerDensity[8];
+    int cubeCase = 0;
+    for (int corner = 0; corner < 8; ++corner) {
+        cornerDensity[corner] = densityAt(cell + cornerOffsets[corner]);
+        if (cornerDensity[corner] <= pushConstants.isoLevel) {
+            cubeCase |= 1 << corner;
+        }
+    }
+
+    int cellVertexCount = 0;
+    const int tableOffset = cubeCase * 16;
+    while (cellVertexCount < 15 && triangleTable[tableOffset + cellVertexCount] >= 0) {
+        ++cellVertexCount;
+    }
+    if (cellVertexCount == 0) {
+        return;
+    }
+
+    const uint outputOffset = atomicAdd(indirectCommand.vertexCount, uint(cellVertexCount));
+    for (int vertex = 0; vertex < cellVertexCount; ++vertex) {
+        const int edge = triangleTable[tableOffset + vertex];
+        vertices[outputOffset + uint(vertex)] = vertexOnEdge(cell, edge, cornerDensity);
+    }
+}
