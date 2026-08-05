@@ -29,6 +29,7 @@
 - `marching_cubes`：使用两阶段 Compute Shader 先生成动态 Metaballs 3D 标量场，再通过经典 Marching Cubes 查表生成网格，并以 storage buffer 和 indirect draw 直接渲染。ImGui 面板可调整分辨率、iso level、动画速度、线框和 volume 切片，并显示 GPU 生成耗时与三角形数量；需要 graphics/present 队列同时支持 compute，以及 `R32_SFLOAT` storage image。相机操作与 `model` 相同。
 - `volume_raycasting`：由 Compute Shader 生成动态 Metaballs 3D 标量场，并在全屏 Fragment Shader 中进行 ray-box 求交和体采样。ImGui 面板可切换 DVR 前向合成、MIP 和等值面三种模式，并调整步长、密度窗口、透明度、iso level、梯度光照及动画；需要 graphics/present 队列同时支持 compute，以及可线性过滤的 `R32_SFLOAT` storage/sampled 3D image。相机操作与 `model` 相同。
 - `volume_splatting`：由 Compute Shader 生成 `48^3` 动态 Metaballs 体数据，将每个体素投影为面向相机的 Gaussian quad，并按体素中心深度进行 CPU back-to-front 排序和预乘 alpha 合成。ImGui 面板可调整密度窗口、splat 半径、Gaussian sharpness、透明度及动画，并显示 CPU 排序和 GPU 生成/渲染耗时；需要 graphics/present 队列同时支持 compute，以及 `R32_SFLOAT` storage/sampled 3D image。相机操作与 `model` 相同。
+- `volume_texture_slicing`：由 Compute Shader 生成 `96^3` 动态 Metaballs 3D 纹理，再以相机对齐、back-to-front 的实例化切片进行三线性采样和预乘 alpha 合成。ImGui 面板可在 32–256 个切片间调整，并控制密度窗口、透明度、梯度光照及动画，同时显示 GPU 生成/切片渲染耗时；需要 graphics/present 队列同时支持 compute，以及可线性过滤的 `R32_SFLOAT` storage/sampled 3D image。相机操作与 `model` 相同。
 - `shadow`：使用方向光 2D Shadow Map 进行两遍光栅化，内置平面和立方体展示硬阴影，并始终在右上角显示深度图预览。左键拖动旋转，中键拖动平移，滚轮缩放，`R` 重置视角。
 - `shadow_filtering`：在同一场景中比较 Hard Shadow、PCF 和 PCSS。通过左上角 ImGui 面板切换模式并调整 Depth Bias、PCF Kernel 和 PCSS 搜索/半影参数，右上角始终显示原始深度图；相机控制与 `shadow` 相同。
 - `shadow_csm`：使用三层深度纹理数组实现 Cascaded Shadow Maps；内置约 200 单位的户外地面与近、中、远多组遮挡物，使用 `20/70/200` 分割距离。主场景以轻微色调标出当前 cascade，右上角并排显示三个 cascade 的深度图。
