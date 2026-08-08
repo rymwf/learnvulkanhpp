@@ -1,0 +1,126 @@
+#version 450
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, r32f) uniform writeonly image3D volumeImage;
+
+layout(push_constant) uniform FieldPushConstants {
+    float time;
+    float coverage;
+    float detailStrength;
+    uint resolution;
+} pushConstants;
+
+uint hashUint(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return value;
+}
+
+float hash31(ivec3 position, uint seed) {
+    uint value = uint(position.x) * 73856093u;
+    value ^= uint(position.y) * 19349663u;
+    value ^= uint(position.z) * 83492791u;
+    return float(hashUint(value ^ seed)) / 4294967295.0;
+}
+
+float valueNoise(vec3 position) {
+    const ivec3 cell = ivec3(floor(position));
+    vec3 localPosition = fract(position);
+    localPosition = localPosition * localPosition * (3.0 - 2.0 * localPosition);
+
+    const float c000 = hash31(cell + ivec3(0, 0, 0), 0x68bc21ebu);
+    const float c100 = hash31(cell + ivec3(1, 0, 0), 0x68bc21ebu);
+    const float c010 = hash31(cell + ivec3(0, 1, 0), 0x68bc21ebu);
+    const float c110 = hash31(cell + ivec3(1, 1, 0), 0x68bc21ebu);
+    const float c001 = hash31(cell + ivec3(0, 0, 1), 0x68bc21ebu);
+    const float c101 = hash31(cell + ivec3(1, 0, 1), 0x68bc21ebu);
+    const float c011 = hash31(cell + ivec3(0, 1, 1), 0x68bc21ebu);
+    const float c111 = hash31(cell + ivec3(1, 1, 1), 0x68bc21ebu);
+
+    const float x00 = mix(c000, c100, localPosition.x);
+    const float x10 = mix(c010, c110, localPosition.x);
+    const float x01 = mix(c001, c101, localPosition.x);
+    const float x11 = mix(c011, c111, localPosition.x);
+    const float y0 = mix(x00, x10, localPosition.y);
+    const float y1 = mix(x01, x11, localPosition.y);
+    return mix(y0, y1, localPosition.z);
+}
+
+float fbm(vec3 position) {
+    float value = 0.0;
+    float amplitude = 0.55;
+    for (int octave = 0; octave < 4; ++octave) {
+        value += valueNoise(position) * amplitude;
+        position = position * 2.03 + vec3(11.7, 7.3, 5.9);
+        amplitude *= 0.48;
+    }
+    return value;
+}
+
+vec3 cellularPoint(ivec3 cell) {
+    return vec3(hash31(cell, 0x9e3779b9u),
+                hash31(cell, 0x243f6a88u),
+                hash31(cell, 0xb7e15162u));
+}
+
+float worleyF1(vec3 position) {
+    const ivec3 cell = ivec3(floor(position));
+    const vec3 localPosition = fract(position);
+    float minimumSquaredDistance = 100.0;
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                const ivec3 offset = ivec3(x, y, z);
+                const vec3 delta = vec3(offset) + cellularPoint(cell + offset) - localPosition;
+                minimumSquaredDistance = min(minimumSquaredDistance, dot(delta, delta));
+            }
+        }
+    }
+    return clamp(sqrt(minimumSquaredDistance), 0.0, 1.0);
+}
+
+float cloudLobe(vec3 position, vec3 center, vec3 radius) {
+    const float normalizedDistance = length((position - center) / radius);
+    return 1.0 - smoothstep(0.62, 1.0, normalizedDistance);
+}
+
+void main() {
+    const uvec3 sampleCoordinate = gl_GlobalInvocationID.xyz;
+    if (any(greaterThanEqual(sampleCoordinate, uvec3(pushConstants.resolution)))) {
+        return;
+    }
+
+    const vec3 uv = (vec3(sampleCoordinate) + vec3(0.5)) / float(pushConstants.resolution);
+    const vec3 position = uv * 2.0 - 1.0;
+    const float centerLobe = cloudLobe(position, vec3(0.0, -0.04, 0.0), vec3(0.86, 0.54, 0.68));
+    const float leftLobe = cloudLobe(position, vec3(-0.52, -0.08, 0.02), vec3(0.56, 0.40, 0.48));
+    const float rightLobe = cloudLobe(position, vec3(0.52, -0.02, -0.04), vec3(0.60, 0.44, 0.52));
+    const float topLobe = cloudLobe(position, vec3(0.03, 0.25, 0.02), vec3(0.58, 0.40, 0.52));
+    const float lobeMask = max(max(centerLobe, leftLobe), max(rightLobe, topLobe));
+    const float lowerFade = smoothstep(-0.92, -0.52, position.y);
+    const float upperFade = 1.0 - smoothstep(0.50, 0.94, position.y);
+    const float shapeMask = lobeMask * lowerFade * upperFade;
+
+    const vec3 windOffset = vec3(pushConstants.time * 0.075,
+                                 pushConstants.time * 0.012,
+                                 pushConstants.time * 0.034);
+    const float macroNoise = fbm(position * 1.85 + windOffset);
+    const float baseSignal = shapeMask + (macroNoise - 0.5) * 0.90;
+    const float threshold = mix(0.70, 0.18, clamp(pushConstants.coverage, 0.0, 1.0));
+    float density = smoothstep(threshold, threshold + 0.11, baseSignal);
+    density *= mix(0.34, 1.0, macroNoise);
+
+    const float cellular = 1.0 - worleyF1(position * 5.4 - windOffset * 1.7);
+    const float fineNoise = valueNoise(position * 10.5 + windOffset * 2.2);
+    const float detailNoise = mix(cellular, fineNoise, 0.35);
+    const float edgeWeight = 0.20 + 0.80 * (1.0 - density);
+    density -= (1.0 - detailNoise) * clamp(pushConstants.detailStrength, 0.0, 1.0) * 0.58 * edgeWeight;
+    density *= mix(0.86, 1.04, fineNoise);
+    density = clamp(density, 0.0, 1.0) * smoothstep(0.0, 0.16, shapeMask);
+
+    imageStore(volumeImage, ivec3(sampleCoordinate), vec4(density, 0.0, 0.0, 1.0));
+}
