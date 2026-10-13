@@ -1,8 +1,5 @@
 cmake_minimum_required(VERSION 4.1 FATAL_ERROR)
 
-# Required before compiler detection when the project uses import std.
-set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
-
 get_filename_component(MY_PROJECT_NAME ${CMAKE_SOURCE_DIR} NAME_WLE)
 project(${MY_PROJECT_NAME} VERSION 0.1.0 LANGUAGES CXX)
 
