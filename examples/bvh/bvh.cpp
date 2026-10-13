@@ -23,9 +23,16 @@ constexpr std::uint32_t workgroupSize = 8;
 constexpr std::uint32_t leafTriangleLimit = 4;
 constexpr std::uint32_t maxTraversalDepth = 60;
 constexpr std::uint32_t maxVisibleBounds = 512;
+constexpr std::uint32_t sahBucketCount = 12;
 constexpr float cameraVerticalFovRadians = 0.78539816339744830962f;
 constexpr float orbitRadiansPerPixel = 0.005f;
 constexpr float minimumTriangleAreaSquared = 1.0e-20f;
+
+enum class BvhBuildStrategy : std::uint32_t {
+    median,
+    midpoint,
+    sah,
+};
 
 struct alignas(16) GpuNode {
     glm::vec4 boundsMinimum{};
@@ -54,10 +61,30 @@ struct CpuNode {
     std::uint32_t depth = 0;
 };
 
+struct TriangleRangeBounds {
+    glm::vec3 minimum{std::numeric_limits<float>::max()};
+    glm::vec3 maximum{std::numeric_limits<float>::lowest()};
+    std::uint32_t count = 0;
+};
+
+struct SahBucket {
+    TriangleRangeBounds bounds;
+};
+
 struct BufferResource {
     vk::raii::DeviceMemory memory = nullptr;
     vk::raii::Buffer buffer = nullptr;
     vk::DeviceSize size = 0;
+};
+
+struct BvhCandidate {
+    std::vector<CpuNode> nodes;
+    std::vector<std::uint32_t> nodesPerDepth;
+    BufferResource nodeBuffer;
+    BufferResource triangleBuffer;
+    std::uint32_t triangleCount = 0;
+    std::uint32_t maxVisibleDepth = 0;
+    double cpuBuildMilliseconds = 0.0;
 };
 
 struct ImageResource {
@@ -216,12 +243,188 @@ static_assert(sizeof(GpuStatistics) == 8);
     return triangles;
 }
 
+[[nodiscard]] std::string_view strategyName(BvhBuildStrategy strategy) {
+    switch (strategy) {
+    case BvhBuildStrategy::median:
+        return "Longest-axis median";
+    case BvhBuildStrategy::midpoint:
+        return "Centroid midpoint";
+    case BvhBuildStrategy::sah:
+        return "12-bucket SAH";
+    }
+    return "Unknown";
+}
+
+[[nodiscard]] std::uint32_t longestCentroidAxis(const glm::vec3 &centroidMinimum,
+                                                const glm::vec3 &centroidMaximum) {
+    const auto centroidExtent = centroidMaximum - centroidMinimum;
+    std::uint32_t axis = 0;
+    if (centroidExtent.y > centroidExtent.x) {
+        axis = 1;
+    }
+    if (centroidExtent.z > centroidExtent[axis]) {
+        axis = 2;
+    }
+    return axis;
+}
+
+[[nodiscard]] float surfaceArea(const TriangleRangeBounds &bounds) {
+    const auto extent = glm::max(bounds.maximum - bounds.minimum, glm::vec3{0.0f});
+    return 2.0f * (extent.x * extent.y + extent.y * extent.z + extent.z * extent.x);
+}
+
+[[nodiscard]] std::uint32_t centroidBucket(float centroid,
+                                          float centroidMinimum,
+                                          float centroidExtent) {
+    const auto normalized = std::clamp((centroid - centroidMinimum) / centroidExtent, 0.0f, 1.0f);
+    const auto bucket = static_cast<std::uint32_t>(normalized * static_cast<float>(sahBucketCount));
+    return std::min(bucket, sahBucketCount - 1);
+}
+
+[[nodiscard]] std::uint32_t medianSplit(std::vector<BuildTriangle> &triangles,
+                                       std::uint32_t begin,
+                                       std::uint32_t end,
+                                       std::uint32_t axis) {
+    const auto middle = begin + (end - begin) / 2;
+    std::nth_element(triangles.begin() + begin, triangles.begin() + middle, triangles.begin() + end,
+                     [axis](const BuildTriangle &left, const BuildTriangle &right) {
+                         return left.centroid[axis] < right.centroid[axis];
+                     });
+    return middle;
+}
+
+[[nodiscard]] std::uint32_t chooseSahSplit(std::vector<BuildTriangle> &triangles,
+                                          std::uint32_t begin,
+                                          std::uint32_t end,
+                                          const glm::vec3 &centroidMinimum,
+                                          const glm::vec3 &centroidMaximum,
+                                          bool &splitFound) {
+    constexpr float noSplitCost = std::numeric_limits<float>::max();
+    auto bestCost = noSplitCost;
+    auto bestAxis = 0u;
+    auto bestBucket = 0u;
+    splitFound = false;
+
+    for (std::uint32_t axis = 0; axis < 3; ++axis) {
+        const auto centroidExtent = centroidMaximum[axis] - centroidMinimum[axis];
+        if (centroidExtent <= std::numeric_limits<float>::epsilon()) {
+            continue;
+        }
+
+        std::array<SahBucket, sahBucketCount> buckets{};
+        for (auto index = begin; index < end; ++index) {
+            auto &bucket = buckets[centroidBucket(triangles[index].centroid[axis],
+                                                  centroidMinimum[axis], centroidExtent)];
+            bucket.bounds.minimum = glm::min(bucket.bounds.minimum, triangles[index].boundsMinimum);
+            bucket.bounds.maximum = glm::max(bucket.bounds.maximum, triangles[index].boundsMaximum);
+            ++bucket.bounds.count;
+        }
+
+        std::array<TriangleRangeBounds, sahBucketCount> leftBounds{};
+        std::array<TriangleRangeBounds, sahBucketCount> rightBounds{};
+        auto prefix = TriangleRangeBounds{};
+        for (std::uint32_t bucket = 0; bucket < sahBucketCount; ++bucket) {
+            if (buckets[bucket].bounds.count > 0) {
+                prefix.minimum = glm::min(prefix.minimum, buckets[bucket].bounds.minimum);
+                prefix.maximum = glm::max(prefix.maximum, buckets[bucket].bounds.maximum);
+                prefix.count += buckets[bucket].bounds.count;
+            }
+            leftBounds[bucket] = prefix;
+        }
+        auto suffix = TriangleRangeBounds{};
+        for (auto bucket = sahBucketCount; bucket-- > 0;) {
+            if (buckets[bucket].bounds.count > 0) {
+                suffix.minimum = glm::min(suffix.minimum, buckets[bucket].bounds.minimum);
+                suffix.maximum = glm::max(suffix.maximum, buckets[bucket].bounds.maximum);
+                suffix.count += buckets[bucket].bounds.count;
+            }
+            rightBounds[bucket] = suffix;
+        }
+
+        for (std::uint32_t bucket = 0; bucket + 1 < sahBucketCount; ++bucket) {
+            const auto &left = leftBounds[bucket];
+            const auto &right = rightBounds[bucket + 1];
+            if (left.count == 0 || right.count == 0) {
+                continue;
+            }
+            const auto cost = surfaceArea(left) * static_cast<float>(left.count) +
+                              surfaceArea(right) * static_cast<float>(right.count);
+            if (cost < bestCost) {
+                bestCost = cost;
+                bestAxis = axis;
+                bestBucket = bucket;
+                splitFound = true;
+            }
+        }
+    }
+
+    if (!splitFound) {
+        return begin;
+    }
+
+    const auto axisMinimum = centroidMinimum[bestAxis];
+    const auto axisExtent = centroidMaximum[bestAxis] - axisMinimum;
+    const auto partition = std::partition(triangles.begin() + begin, triangles.begin() + end,
+                                          [bestAxis, bestBucket, axisMinimum,
+                                           axisExtent](const BuildTriangle &triangle) {
+                                              return centroidBucket(triangle.centroid[bestAxis], axisMinimum,
+                                                                    axisExtent) <= bestBucket;
+                                          });
+    return static_cast<std::uint32_t>(partition - triangles.begin());
+}
+
+[[nodiscard]] std::uint32_t chooseSplit(std::vector<BuildTriangle> &triangles,
+                                        std::uint32_t begin,
+                                        std::uint32_t end,
+                                        const glm::vec3 &centroidMinimum,
+                                        const glm::vec3 &centroidMaximum,
+                                        std::uint32_t depth,
+                                        BvhBuildStrategy strategy) {
+    const auto medianAxis = longestCentroidAxis(centroidMinimum, centroidMaximum);
+    auto middle = begin;
+    switch (strategy) {
+    case BvhBuildStrategy::median:
+        return medianSplit(triangles, begin, end, medianAxis);
+    case BvhBuildStrategy::midpoint: {
+        const auto midpoint = (centroidMinimum[medianAxis] + centroidMaximum[medianAxis]) * 0.5f;
+        const auto partition = std::partition(triangles.begin() + begin, triangles.begin() + end,
+                                              [medianAxis, midpoint](const BuildTriangle &triangle) {
+                                                  return triangle.centroid[medianAxis] < midpoint;
+                                              });
+        middle = static_cast<std::uint32_t>(partition - triangles.begin());
+        break;
+    }
+    case BvhBuildStrategy::sah: {
+        bool splitFound = false;
+        middle = chooseSahSplit(triangles, begin, end, centroidMinimum, centroidMaximum, splitFound);
+        if (!splitFound) {
+            middle = begin;
+        }
+        break;
+    }
+    }
+
+    const auto remainingLevels = maxTraversalDepth - depth - 1;
+    const auto maximumChildTriangleCount = std::min<std::uint64_t>(
+        std::numeric_limits<std::uint32_t>::max(),
+        static_cast<std::uint64_t>(leafTriangleLimit) * (std::uint64_t{1} << remainingLevels));
+    if (middle == begin || middle == end || middle - begin > maximumChildTriangleCount ||
+        end - middle > maximumChildTriangleCount) {
+        middle = medianSplit(triangles, begin, end, medianAxis);
+        if (middle - begin > maximumChildTriangleCount || end - middle > maximumChildTriangleCount) {
+            throw std::runtime_error("BVH cannot satisfy the shader traversal stack depth");
+        }
+    }
+    return middle;
+}
+
 std::uint32_t buildNode(std::vector<BuildTriangle> &triangles,
                         std::vector<CpuNode> &nodes,
                         std::vector<std::uint32_t> &nodesPerDepth,
                         std::uint32_t begin,
                         std::uint32_t end,
-                        std::uint32_t depth) {
+                        std::uint32_t depth,
+                        BvhBuildStrategy strategy) {
     if (depth >= maxTraversalDepth && end - begin > leafTriangleLimit) {
         throw std::runtime_error("BVH exceeded the shader traversal stack depth");
     }
@@ -254,22 +457,10 @@ std::uint32_t buildNode(std::vector<BuildTriangle> &triangles,
         return nodeIndex;
     }
 
-    const auto centroidExtent = centroidMaximum - centroidMinimum;
-    std::uint32_t axis = 0;
-    if (centroidExtent.y > centroidExtent.x) {
-        axis = 1;
-    }
-    if (centroidExtent.z > centroidExtent[axis]) {
-        axis = 2;
-    }
-    const auto middle = begin + triangleCount / 2;
-    std::nth_element(triangles.begin() + begin, triangles.begin() + middle, triangles.begin() + end,
-                     [axis](const BuildTriangle &left, const BuildTriangle &right) {
-                         return left.centroid[axis] < right.centroid[axis];
-                     });
+    const auto middle = chooseSplit(triangles, begin, end, centroidMinimum, centroidMaximum, depth, strategy);
 
-    const auto leftChild = buildNode(triangles, nodes, nodesPerDepth, begin, middle, depth + 1);
-    const auto rightChild = buildNode(triangles, nodes, nodesPerDepth, middle, end, depth + 1);
+    const auto leftChild = buildNode(triangles, nodes, nodesPerDepth, begin, middle, depth + 1, strategy);
+    const auto rightChild = buildNode(triangles, nodes, nodesPerDepth, middle, end, depth + 1, strategy);
     nodes[nodeIndex].gpu.data = {leftChild, rightChild, 0, 0};
     return nodeIndex;
 }
@@ -317,10 +508,15 @@ private:
 
     std::vector<CpuNode> cpuNodes;
     std::vector<std::uint32_t> nodesPerDepth;
+    std::vector<BuildTriangle> sourceTriangles;
     std::vector<StatisticsSlot> statisticsSlots;
     std::uint32_t triangleCount = 0;
     std::uint32_t maxVisibleDepth = 0;
     int selectedDepth = 3;
+    BvhBuildStrategy selectedStrategy = BvhBuildStrategy::median;
+    BvhBuildStrategy activeStrategy = BvhBuildStrategy::median;
+    double cpuBuildMilliseconds = 0.0;
+    std::string buildError;
     GpuStatistics statistics{};
     bool statisticsValid = false;
     bool outputImageInitialized = false;
@@ -451,25 +647,35 @@ private:
     }
 
     void createBvhBuffers() {
-        auto triangles = loadBunnyTriangles();
-        if (triangles.size() > std::numeric_limits<std::uint32_t>::max()) {
+        auto candidate = buildBvhCandidate(BvhBuildStrategy::median);
+        installBvhCandidate(std::move(candidate), BvhBuildStrategy::median);
+    }
+
+    [[nodiscard]] BvhCandidate buildBvhCandidate(BvhBuildStrategy strategy) {
+        if (sourceTriangles.empty()) {
+            sourceTriangles = loadBunnyTriangles();
+        }
+        if (sourceTriangles.size() > std::numeric_limits<std::uint32_t>::max()) {
             throw std::runtime_error("BVH triangle count exceeds uint32 range");
         }
-        triangleCount = static_cast<std::uint32_t>(triangles.size());
-        cpuNodes.clear();
-        cpuNodes.reserve(triangles.size() * 2);
-        nodesPerDepth.clear();
-        (void)buildNode(triangles, cpuNodes, nodesPerDepth, 0, triangleCount, 0);
+        const auto buildStart = std::chrono::steady_clock::now();
+        auto triangles = sourceTriangles;
+        BvhCandidate candidate;
+        candidate.triangleCount = static_cast<std::uint32_t>(triangles.size());
+        candidate.nodes.reserve(triangles.size() * 2);
+        (void)buildNode(triangles, candidate.nodes, candidate.nodesPerDepth, 0,
+                        candidate.triangleCount, 0, strategy);
 
-        while (maxVisibleDepth + 1 < nodesPerDepth.size() &&
-               nodesPerDepth[maxVisibleDepth + 1] <= maxVisibleBounds) {
-            ++maxVisibleDepth;
+        while (candidate.maxVisibleDepth + 1 < candidate.nodesPerDepth.size() &&
+               candidate.nodesPerDepth[candidate.maxVisibleDepth + 1] <= maxVisibleBounds) {
+            ++candidate.maxVisibleDepth;
         }
-        selectedDepth = static_cast<int>(std::min(3u, maxVisibleDepth));
+        candidate.cpuBuildMilliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart).count();
 
         std::vector<GpuNode> gpuNodes;
-        gpuNodes.reserve(cpuNodes.size());
-        for (const auto &node : cpuNodes) {
+        gpuNodes.reserve(candidate.nodes.size());
+        for (const auto &node : candidate.nodes) {
             gpuNodes.push_back(node.gpu);
         }
         std::vector<GpuTriangle> gpuTriangles;
@@ -485,17 +691,52 @@ private:
             throw std::runtime_error("Bunny BVH data exceeds maxStorageBufferRange");
         }
 
-        nodeBuffer = createBuffer(nodeBytes,
-                                  vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
-                                  vk::MemoryPropertyFlagBits::eDeviceLocal);
-        triangleBuffer = createBuffer(
+        candidate.nodeBuffer = createBuffer(
+            nodeBytes, vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
+            vk::MemoryPropertyFlagBits::eDeviceLocal);
+        candidate.triangleBuffer = createBuffer(
             triangleBytes, vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
             vk::MemoryPropertyFlagBits::eDeviceLocal);
-        uploadDeviceBuffer(nodeBuffer, gpuNodes.data(), nodeBytes);
-        uploadDeviceBuffer(triangleBuffer, gpuTriangles.data(), triangleBytes);
+        uploadDeviceBuffer(candidate.nodeBuffer, gpuNodes.data(), nodeBytes);
+        uploadDeviceBuffer(candidate.triangleBuffer, gpuTriangles.data(), triangleBytes);
+        return candidate;
+    }
 
-        std::println("Built median-split BVH: {} nodes, {} triangles, depth {}", cpuNodes.size(), triangleCount,
-                     nodesPerDepth.size() - 1);
+    void installBvhCandidate(BvhCandidate candidate, BvhBuildStrategy strategy) {
+        if (!descriptorSets.empty()) {
+            updateBvhBufferDescriptors(candidate.nodeBuffer, candidate.triangleBuffer);
+        }
+
+        nodeBuffer = std::move(candidate.nodeBuffer);
+        triangleBuffer = std::move(candidate.triangleBuffer);
+        cpuNodes = std::move(candidate.nodes);
+        nodesPerDepth = std::move(candidate.nodesPerDepth);
+        triangleCount = candidate.triangleCount;
+        maxVisibleDepth = candidate.maxVisibleDepth;
+        selectedDepth = static_cast<int>(std::min(3u, maxVisibleDepth));
+        activeStrategy = strategy;
+        selectedStrategy = strategy;
+        cpuBuildMilliseconds = candidate.cpuBuildMilliseconds;
+        statistics = {};
+        statisticsValid = false;
+        for (auto &slot : statisticsSlots) {
+            slot.pending = false;
+        }
+        buildError.clear();
+        std::println("Built {} BVH: {} nodes, {} triangles, depth {}, CPU {:.3f} ms",
+                     strategyName(activeStrategy), cpuNodes.size(), triangleCount, nodesPerDepth.size() - 1,
+                     cpuBuildMilliseconds);
+    }
+
+    void rebuildBvh() {
+        try {
+            // Descriptors and recorded submissions can still reference the current buffers.
+            device().waitIdle();
+            auto candidate = buildBvhCandidate(selectedStrategy);
+            installBvhCandidate(std::move(candidate), selectedStrategy);
+        } catch (const std::exception &error) {
+            buildError = error.what();
+        }
     }
 
     void createOutputImage() {
@@ -684,6 +925,39 @@ private:
                     .descriptorCount = 1,
                     .descriptorType = vk::DescriptorType::eStorageBuffer,
                     .pBufferInfo = &statisticsInfo,
+                },
+            };
+            device().updateDescriptorSets(writes, {});
+        }
+    }
+
+    void updateBvhBufferDescriptors(const BufferResource &newNodeBuffer,
+                                    const BufferResource &newTriangleBuffer) {
+        for (const auto &descriptorSet : descriptorSets) {
+            const vk::DescriptorBufferInfo nodeInfo{
+                .buffer = *newNodeBuffer.buffer,
+                .offset = 0,
+                .range = newNodeBuffer.size,
+            };
+            const vk::DescriptorBufferInfo triangleInfo{
+                .buffer = *newTriangleBuffer.buffer,
+                .offset = 0,
+                .range = newTriangleBuffer.size,
+            };
+            const std::array writes = {
+                vk::WriteDescriptorSet{
+                    .dstSet = *descriptorSet,
+                    .dstBinding = 2,
+                    .descriptorCount = 1,
+                    .descriptorType = vk::DescriptorType::eStorageBuffer,
+                    .pBufferInfo = &nodeInfo,
+                },
+                vk::WriteDescriptorSet{
+                    .dstSet = *descriptorSet,
+                    .dstBinding = 3,
+                    .descriptorCount = 1,
+                    .descriptorType = vk::DescriptorType::eStorageBuffer,
+                    .pBufferInfo = &triangleInfo,
                 },
             };
             device().updateDescriptorSets(writes, {});
@@ -1031,7 +1305,7 @@ private:
         const auto *viewport = ImGui::GetMainViewport();
         constexpr float margin = 12.0f;
         const auto panelWidth = std::max(1.0f, std::min(300.0f, viewport->WorkSize.x - 2.0f * margin));
-        const auto panelHeight = std::max(1.0f, std::min(350.0f, viewport->WorkSize.y - 2.0f * margin));
+        const auto panelHeight = std::max(1.0f, std::min(430.0f, viewport->WorkSize.y - 2.0f * margin));
         ImGui::SetNextWindowPos({viewport->WorkPos.x + margin, viewport->WorkPos.y + margin}, ImGuiCond_Always);
         ImGui::SetNextWindowSize({panelWidth, panelHeight}, ImGuiCond_Always);
         constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
@@ -1040,6 +1314,25 @@ private:
             ImGui::Text("Mesh: %u triangles", triangleCount);
             ImGui::Text("BVH: %u nodes, depth %u", static_cast<std::uint32_t>(cpuNodes.size()),
                         static_cast<std::uint32_t>(nodesPerDepth.size() - 1));
+            ImGui::SeparatorText("Build");
+            constexpr std::array<const char *, 3> strategyNames = {
+                "Longest-axis median", "Centroid midpoint", "12-bucket SAH",
+            };
+            auto strategyIndex = static_cast<int>(selectedStrategy);
+            if (ImGui::Combo("Strategy", &strategyIndex, strategyNames.data(),
+                             static_cast<int>(strategyNames.size()))) {
+                selectedStrategy = static_cast<BvhBuildStrategy>(strategyIndex);
+            }
+            if (ImGui::Button("Build BVH", {-1.0f, 0.0f})) {
+                rebuildBvh();
+            }
+            ImGui::Text("Active: %s", strategyName(activeStrategy).data());
+            ImGui::Text("CPU build: %.3f ms", cpuBuildMilliseconds);
+            if (!buildError.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0f, 0.35f, 0.3f, 1.0f});
+                ImGui::TextWrapped("Build failed: %s", buildError.c_str());
+                ImGui::PopStyleColor();
+            }
             ImGui::SeparatorText("Traversal");
             if (statisticsValid) {
                 const auto pixelCount = static_cast<double>(swapchainExtent().width) * swapchainExtent().height;

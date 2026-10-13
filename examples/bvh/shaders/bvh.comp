@@ -167,7 +167,7 @@ void main() {
                                                nodes[rightIndex].boundsMaximum.xyz, closestDistance,
                                                rightNearDistance);
         if (hitLeft && hitRight) {
-            // The fixed stack is safe because the CPU builder produces a balanced median-split tree.
+            // The CPU builder limits tree depth and keeps each leaf at four triangles or fewer.
             if (stackSize + 2 <= MAX_TRAVERSAL_STACK) {
                 if (leftNearDistance < rightNearDistance) {
                     stack[stackSize++] = rightIndex;
