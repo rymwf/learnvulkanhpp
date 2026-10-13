@@ -38,6 +38,7 @@
 - `shadow_volume`：在基础 Shadow Map 上增加半透明体积区域，对光线方向上的采样点积分并按阴影衰减散射；右上角保留深度图预览。
 - `raytracing`：使用 KHR Ray Tracing Pipeline、BLAS/TLAS 和 SBT 绘制光追三角形；需要支持 Vulkan 1.2、buffer device address、acceleration structure 和 ray tracing pipeline 的 GPU。
 - `rayquery`：使用 BLAS/TLAS 和 `VK_KHR_ray_query` 在 fragment shader 中查询静态场景的硬阴影；不使用 KHR Ray Tracing Pipeline 或 SBT，需要支持 Vulkan 1.2、buffer device address、acceleration structure 和 ray query 的 GPU。
+- `bvh`：使用 CPU 按质心最长轴中位数构建软件 BVH，并由 compute shader 遍历 bunny 三角网格；ImGui 显示平均节点/三角形测试数，并可叠加指定层级的 AABB。仅需 graphics/compute 队列，不依赖 Vulkan 硬件光追扩展。
 
 ## 构建
 
